@@ -220,15 +220,13 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
     # Checkpoint loading (weights)
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    # Staggered compilation to avoid "thundering herd" CPU/memory spikes
-    if world_size > 1:
-        time.sleep(rank * 3)  # Small delay per rank
+    # NOTE: torch.compile is disabled for multi-GPU DDP runs.
+    # The TorchInductor compiler struggles with symbolic shape reasoning
+    # (pow_by_natural warnings) causing some ranks to hang indefinitely
+    # during compilation while others spin-wait in NCCL. Re-enable for
+    # single-GPU training if desired: model = torch.compile(model)
 
-    if is_main:
-        print(f"{get_time_info()} Compiling model...")
-    model = torch.compile(model)
-
-    # Wrap model in DDP/DP AFTER compilation for better kernel stability
+    # Wrap model in DDP/DP
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
         if is_main:
