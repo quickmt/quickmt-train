@@ -403,22 +403,11 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
             curr_lr = optimizer.param_groups[0]["lr"]
             elapsed = time.time() - last_log_time
 
-            # Aggregate token counts across all ranks for accurate throughput
-            if world_size > 1:
-                tok_tensor = torch.tensor(
-                    [batch_src_tokens, batch_tgt_tokens],
-                    dtype=torch.float32,
-                    device=device,
-                )
-                dist.all_reduce(tok_tensor, op=dist.ReduceOp.SUM)
-                total_src_tokens = tok_tensor[0].item()
-                total_tgt_tokens = tok_tensor[1].item()
-            else:
-                total_src_tokens = batch_src_tokens
-                total_tgt_tokens = batch_tgt_tokens
-
-            in_tok_s = total_src_tokens / max(1e-6, elapsed)
-            out_tok_s = total_tgt_tokens / max(1e-6, elapsed)
+            # Estimate total system throughput: rank 0's count × world_size.
+            # Data is sharded evenly so this is a good approximation, and avoids
+            # introducing any NCCL collectives inside a rank-0-only branch.
+            in_tok_s = batch_src_tokens * world_size / max(1e-6, elapsed)
+            out_tok_s = batch_tgt_tokens * world_size / max(1e-6, elapsed)
 
             print(
                 f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
