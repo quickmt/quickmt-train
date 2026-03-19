@@ -20,7 +20,7 @@ dependencies = [
     "datasets",
     "sacrebleu",
     "sentence-transformers",
-    "fasttext-wheel",
+    "fasttext",
     "quickmt @ git+https://github.com/quickmt/quickmt.git"
 ]
 
