@@ -361,8 +361,10 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
             global_step += 1
             global_step_value.value = global_step
 
-            # Validation and Checkpointing (Main worker only)
-            if is_main and global_step % train_cfg.eval_steps == 0:
+            # Validation and Checkpointing
+            # Run validate() on ALL ranks (DDP requires all ranks to participate
+            # in the forward pass). Only rank 0 logs metrics and saves checkpoints.
+            if global_step % train_cfg.eval_steps == 0:
                 val_metrics = validate(
                     model,
                     dev_loader,
@@ -374,27 +376,24 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
                     model_cfg,
                     get_time_info,
                 )
-                if run:
-                    for k, v in val_metrics.items():
-                        run.track(
-                            v,
-                            name=f"val_{k}",
-                            step=global_step,
-                            context={"subset": "dev"},
-                        )
-                save_checkpoint(
-                    global_step,
-                    model,
-                    optimizer,
-                    scheduler,
-                    train_cfg,
-                    get_time_info,
-                    val_metrics=val_metrics,
-                )
-
-            # Ensure all ranks stay in sync at the end of an accumulation loop
-            if world_size > 1:
-                dist.barrier()
+                if is_main:
+                    if run:
+                        for k, v in val_metrics.items():
+                            run.track(
+                                v,
+                                name=f"val_{k}",
+                                step=global_step,
+                                context={"subset": "dev"},
+                            )
+                    save_checkpoint(
+                        global_step,
+                        model,
+                        optimizer,
+                        scheduler,
+                        train_cfg,
+                        get_time_info,
+                        val_metrics=val_metrics,
+                    )
 
             if global_step >= train_cfg.max_steps:
                 break
