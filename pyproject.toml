@@ -9,7 +9,6 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "torch>=2.0.0",
-    "aim",
     "fire",
     "scipy",
     "numpy",
@@ -30,6 +29,9 @@ docs = [
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings[python]",
+]
+track = [
+    "aim"
 ]
 
 [project.urls]

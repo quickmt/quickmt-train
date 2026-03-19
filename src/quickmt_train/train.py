@@ -8,7 +8,12 @@ import sacrebleu
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from aim import Run
+try:
+    from aim import Run
+    AIM_AVAILABLE = True
+except ImportError:
+    AIM_AVAILABLE = False
+    Run = None
 from safetensors.torch import load_file, save_model
 from shutil import copyfile
 
@@ -142,14 +147,19 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
 
     device = setup_training_environment(train_cfg, get_time_info)
 
-    run = Run(repo=train_cfg.aim_repo, experiment=train_cfg.experiment_name)
+    if AIM_AVAILABLE and train_cfg.aim_repo:
+        run = Run(repo=train_cfg.aim_repo, experiment=train_cfg.experiment_name)
+    else:
+        run = None
+
     import dataclasses
 
-    run["hparams"] = {
-        **{f"model_{k}": v for k, v in dataclasses.asdict(model_cfg).items()},
-        **{f"data_{k}": v for k, v in dataclasses.asdict(data_cfg).items()},
-        **{f"train_{k}": v for k, v in dataclasses.asdict(train_cfg).items()},
-    }
+    if run:
+        run["hparams"] = {
+            **{f"model_{k}": v for k, v in dataclasses.asdict(model_cfg).items()},
+            **{f"data_{k}": v for k, v in dataclasses.asdict(data_cfg).items()},
+            **{f"train_{k}": v for k, v in dataclasses.asdict(train_cfg).items()},
+        }
 
     # Data
     print(f"{get_time_info()} Preparing data...")
@@ -311,13 +321,14 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
                     model_cfg,
                     get_time_info,
                 )
-                for k, v in val_metrics.items():
-                    run.track(
-                        v,
-                        name=f"val_{k}",
-                        step=global_step,
-                        context={"subset": "dev"},
-                    )
+                if run:
+                    for k, v in val_metrics.items():
+                        run.track(
+                            v,
+                            name=f"val_{k}",
+                            step=global_step,
+                            context={"subset": "dev"},
+                        )
                 save_checkpoint(
                     global_step,
                     model,
@@ -345,15 +356,16 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             )
 
             # Aim tracking
-            run.track(
-                last_batch_loss,
-                name="loss",
-                step=global_step,
-                context={"subset": "train"},
-            )
-            run.track(curr_lr, name="lr", step=global_step)
-            run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
-            run.track(out_tok_s, name="output_tokens_per_sec", step=global_step)
+            if run:
+                run.track(
+                    last_batch_loss,
+                    name="loss",
+                    step=global_step,
+                    context={"subset": "train"},
+                )
+                run.track(curr_lr, name="lr", step=global_step)
+                run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
+                run.track(out_tok_s, name="output_tokens_per_sec", step=global_step)
 
             # Reset throughput counters
             batch_src_tokens = 0
