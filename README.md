@@ -1,5 +1,3 @@
-[![Documentation](https://img.shields.io/badge/Documentation-526CFE?style=for-the-badge&logo=MaterialForMkDocs&logoColor=white)]([https://squidfunk.github.io/mkdocs-material/](https://quickmt.github.io/quickmt-train/))
-
 # NMT Model Training From Scratch 
 
 Experimenting with training Neural Machine Translation (NMT) models from scratch using PyTorch.
