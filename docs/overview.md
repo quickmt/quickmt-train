@@ -1,4 +1,4 @@
-# Getting Started
+# Overview
 
 To get started with `quickmt-train`, you'll first need to install the library.
 

@@ -16,6 +16,8 @@ except ImportError:
     Run = None
 from safetensors.torch import load_file, save_model
 from shutil import copyfile
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .config import DataConfig, ModelConfig, TrainConfig
 from .data import PrepareData
@@ -67,28 +69,23 @@ def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
     print("-" * 60)
 
 
-def setup_training_environment(train_cfg, get_time_info):
-    # Remove metrics file if exists
-    metrics_path = os.path.join(train_cfg.experiment_name, "metrics.jsonl")
-    if os.path.exists(metrics_path):
-        os.remove(metrics_path)
 
-    # Device selection
-    if train_cfg.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def setup_dist(train_cfg):
+    """
+    Initialize distributed training environment.
+    Returns (rank, local_rank, world_size)
+    """
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        # Launched via torchrun
+        rank = int(os.environ["RANK"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        dist.init_process_group("nccl")
+        torch.cuda.set_device(local_rank)
+        return rank, local_rank, world_size
     else:
-        device = torch.device(train_cfg.device)
-    print(f"{get_time_info()} Using device: {device}")
-
-    # Performance optimizations
-    if device.type == "cuda":
-        torch.backends.cudnn.benchmark = True  # Enable cudnn autotuner
-        torch.backends.cuda.matmul.allow_tf32 = train_cfg.tf32  # Allow TF32 on matmul
-        torch.backends.cudnn.allow_tf32 = train_cfg.tf32  # Allow TF32 on cudnn
-        if train_cfg.tf32:
-            torch.set_float32_matmul_precision("high")
-
-    return device
+        # Single process
+        return 0, 0, 1
 
 
 def load_model_weights(model, train_cfg, device, get_time_info):
@@ -145,16 +142,39 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     if train_cfg is None:
         train_cfg = TrainConfig()
 
-    device = setup_training_environment(train_cfg, get_time_info)
+    rank, local_rank, world_size = setup_dist(train_cfg)
+    is_main = rank == 0
 
-    if AIM_AVAILABLE and train_cfg.aim_repo:
+    if train_cfg.device == "auto":
+        device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
+    else:
+        device = torch.device(train_cfg.device)
+
+    # Performance optimizations
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = train_cfg.tf32
+        torch.backends.cudnn.allow_tf32 = train_cfg.tf32
+        if train_cfg.tf32:
+            torch.set_float32_matmul_precision("high")
+
+    if is_main:
+        # Remove metrics file if exists
+        metrics_path = os.path.join(train_cfg.experiment_name, "metrics.jsonl")
+        if os.path.exists(metrics_path):
+            os.remove(metrics_path)
+            
+        print(f"{get_time_info()} Rank: {rank}/{world_size} | Local Rank: {local_rank}")
+        print(f"{get_time_info()} Using device: {device}")
+
+    if is_main and AIM_AVAILABLE and train_cfg.aim_repo:
         run = Run(repo=train_cfg.aim_repo, experiment=train_cfg.experiment_name)
     else:
         run = None
 
     import dataclasses
 
-    if run:
+    if run and is_main:
         run["hparams"] = {
             **{f"model_{k}": v for k, v in dataclasses.asdict(model_cfg).items()},
             **{f"data_{k}": v for k, v in dataclasses.asdict(data_cfg).items()},
@@ -162,7 +182,8 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
         }
 
     # Data
-    print(f"{get_time_info()} Preparing data...")
+    if is_main:
+        print(f"{get_time_info()} Preparing data...")
 
     import multiprocessing as mp
 
@@ -170,7 +191,12 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     global_step_value = ctx.Value("i", 0)
 
     train_loader, dev_loader, src_sp, tgt_sp = PrepareData(
-        model_cfg, data_cfg, train_cfg, global_step_value=global_step_value
+        model_cfg,
+        data_cfg,
+        train_cfg,
+        global_step_value=global_step_value,
+        rank=rank,
+        world_size=world_size,
     )
 
     # Model
@@ -187,13 +213,16 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
 
     model = torch.compile(model)
 
-    if torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
-        print(
-            f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
-        )
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank])
+        if is_main:
+            print(f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})")
+    elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
+        print(f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel.")
         model = nn.DataParallel(model)
 
-    print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
+    if is_main:
+        print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -280,7 +309,17 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             if num_tokens.ndim > 0:
                 num_tokens = num_tokens.sum()
 
-        loss.backward()
+        # In DDP, backward() syncs gradients across all GPUs.
+        # Use no_sync context to only sync at the end of accumulation.
+        if world_size > 1 and (batch_idx + 1) % train_cfg.accum_steps != 0:
+            context = model.no_sync()
+        else:
+            from contextlib import nullcontext
+            context = nullcontext()
+
+        with context:
+            loss.backward()
+
         accum_loss += loss.item()
         accum_tokens += num_tokens.item()
 
@@ -308,8 +347,8 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             global_step += 1
             global_step_value.value = global_step
 
-            # Validation and Checkpointing
-            if global_step % train_cfg.eval_steps == 0:
+            # Validation and Checkpointing (Main worker only)
+            if is_main and global_step % train_cfg.eval_steps == 0:
                 val_metrics = validate(
                     model,
                     dev_loader,
@@ -339,11 +378,15 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
                     val_metrics=val_metrics,
                 )
 
+            # Ensure all ranks stay in sync at the end of an accumulation loop
+            if world_size > 1:
+                dist.barrier()
+
             if global_step >= train_cfg.max_steps:
                 break
 
-        # Progress Print
-        if batch_idx % train_cfg.log_steps == 0:
+        # Progress Print (Rank 0 only)
+        if is_main and batch_idx % train_cfg.log_steps == 0:
             curr_lr = optimizer.param_groups[0]["lr"]
             elapsed = time.time() - last_log_time
             in_tok_s = batch_src_tokens / max(1e-6, elapsed)
@@ -372,23 +415,26 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             batch_tgt_tokens = 0
             last_log_time = time.time()
 
-    avg_loss = total_loss_sum / max(1, total_tokens_trained)
-    print(
-        f"{get_time_info()} Training Completed | Avg Loss: {avg_loss:.4f} | Total Time: {time.time() - start_time:.2f}s"
-    )
+    if is_main:
+        avg_loss = total_loss_sum / max(1, total_tokens_trained)
+        print(
+            f"{get_time_info()} Training Completed | Avg Loss: {avg_loss:.4f} | Total Time: {time.time() - start_time:.2f}s"
+        )
+        print(f"{get_time_info()} Training complete.")
 
-    print(f"{get_time_info()} Training complete.")
+        run_quick_test(
+            model,
+            dev_loader,
+            src_sp,
+            tgt_sp,
+            device,
+            model_cfg,
+            train_cfg,
+            get_time_info,
+        )
 
-    run_quick_test(
-        model,
-        dev_loader,
-        src_sp,
-        tgt_sp,
-        device,
-        model_cfg,
-        train_cfg,
-        get_time_info,
-    )
+    if world_size > 1:
+        dist.destroy_process_group()
 
 
 def save_checkpoint(

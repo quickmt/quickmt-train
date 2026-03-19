@@ -28,6 +28,8 @@ class StreamingTextDataset(IterableDataset):
         tgt_spm_alpha: float = 1.0,
         src_spm_nbest_size: int = 0,
         tgt_spm_nbest_size: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         self.corpora = corpora
         self.src_sp = src_sp
@@ -45,6 +47,8 @@ class StreamingTextDataset(IterableDataset):
         self.tgt_spm_alpha = tgt_spm_alpha
         self.src_spm_nbest_size = src_spm_nbest_size
         self.tgt_spm_nbest_size = tgt_spm_nbest_size
+        self.rank = rank
+        self.world_size = world_size
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -58,10 +62,17 @@ class StreamingTextDataset(IterableDataset):
                 f_src = open(c.src_file, "r", encoding="utf-8")
                 f_tgt = open(c.tgt_file, "r", encoding="utf-8")
                 pair_iter = zip(f_src, f_tgt)
-                if worker_info is not None:
-                    pair_iter = itertools.islice(
-                        pair_iter, worker_info.id, None, worker_info.num_workers
-                    )
+                
+                # Partition across DDP ranks and DataLoader workers
+                num_workers = worker_info.num_workers if worker_info is not None else 1
+                worker_id = worker_info.id if worker_info is not None else 0
+                
+                total_shards = self.world_size * num_workers
+                global_worker_id = self.rank * num_workers + worker_id
+                
+                pair_iter = itertools.islice(
+                    pair_iter, global_worker_id, None, total_shards
+                )
                 return f_src, f_tgt, pair_iter
 
             for c in self.corpora:
@@ -410,7 +421,9 @@ def load_file_lines(path, limit=None):
     return lines
 
 
-def PrepareData(model_cfg, data_cfg, train_cfg, global_step_value=None):
+def PrepareData(
+    model_cfg, data_cfg, train_cfg, global_step_value=None, rank=0, world_size=1
+):
     from .config import CorpusConfig
 
     # 1. Train Tokenizers (if not exists)
@@ -481,6 +494,8 @@ def PrepareData(model_cfg, data_cfg, train_cfg, global_step_value=None):
         tgt_spm_nbest_size=data_cfg.tgt_spm_nbest_size,
         src_spm_alpha=data_cfg.src_spm_alpha,
         tgt_spm_alpha=data_cfg.tgt_spm_alpha,
+        rank=rank,
+        world_size=world_size,
     )
 
     dev_corpora = [

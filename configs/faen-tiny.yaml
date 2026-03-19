@@ -5,8 +5,8 @@ model:
   n_heads: 4
   ffn_dim: 1024
   max_len: 256
-  vocab_size_src: 10000
-  vocab_size_tgt: 10000
+  vocab_size_src: 16000
+  vocab_size_tgt: 16000
   mlp_type: "gated"
   activation: "gelu" # gelu or silu
   ff_bias: false
@@ -31,13 +31,13 @@ data:
       tgt_file: "data/train.en"
       weight: 3
       start_step: 0
-    - src_file: "/home/mark/mt/data/newscrawl.backtrans.fa-en.cleaned.filtered.fa"
-      tgt_file: "/home/mark/mt/data/newscrawl.backtrans.fa-en.cleaned.filtered.en"
+    - src_file: "../../mt/data/newscrawl.backtrans.fa-en.cleaned.filtered.fa"
+      tgt_file: "../../mt/data/newscrawl.backtrans.fa-en.cleaned.filtered.en"
       weight: 1
       start_step: 0
       #stop_step: 35000
-    - src_file: "/home/mark/mt/data/madlad.backtrans.fa-en.cleaned.filtered.fa"
-      tgt_file: "/home/mark/mt/data/madlad.backtrans.fa-en.cleaned.filtered.en"
+    - src_file: "../../mt/data/madlad.backtrans.fa-en.cleaned.filtered.fa"
+      tgt_file: "../../mt/data/madlad.backtrans.fa-en.cleaned.filtered.en"
       weight: 1
       start_step: 0
       #stop_step: 35000
