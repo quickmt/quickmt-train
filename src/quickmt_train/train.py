@@ -211,8 +211,7 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     # Checkpoint loading (weights)
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    model = torch.compile(model)
-
+    # Wrap model in DDP/DP first
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
         if is_main:
@@ -220,6 +219,14 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
         print(f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel.")
         model = nn.DataParallel(model)
+
+    # Staggered compilation to avoid "thundering herd" CPU/memory spikes
+    if world_size > 1:
+        time.sleep(rank * 3)  # Small delay per rank
+
+    if is_main:
+        print(f"{get_time_info()} Compiling model...")
+    model = torch.compile(model)
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
