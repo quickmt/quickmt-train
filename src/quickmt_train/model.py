@@ -11,10 +11,12 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x):
-        # Calculate RMS
-        norm_x = torch.mean(x**2, dim=-1, keepdim=True)
-        x_normed = x * torch.rsqrt(norm_x + self.eps)
-        return self.weight * x_normed
+        # Calculate RMS in float32 for stability
+        dtype = x.dtype
+        x_f32 = x.float()
+        norm_x = torch.mean(x_f32**2, dim=-1, keepdim=True)
+        x_normed = x_f32 * torch.rsqrt(norm_x + self.eps)
+        return (self.weight.float() * x_normed).to(dtype)
 
 
 class PositionalEncoding(nn.Module):

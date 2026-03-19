@@ -145,6 +145,15 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     rank, local_rank, world_size = setup_dist(train_cfg)
     is_main = rank == 0
 
+    try:
+        _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info)
+    finally:
+        if world_size > 1:
+            dist.destroy_process_group()
+
+
+def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info):
+
     if train_cfg.device == "auto":
         device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
     else:
@@ -211,15 +220,6 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     # Checkpoint loading (weights)
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    # Wrap model in DDP/DP first
-    if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
-        if is_main:
-            print(f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})")
-    elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
-        print(f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel.")
-        model = nn.DataParallel(model)
-
     # Staggered compilation to avoid "thundering herd" CPU/memory spikes
     if world_size > 1:
         time.sleep(rank * 3)  # Small delay per rank
@@ -227,6 +227,15 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     if is_main:
         print(f"{get_time_info()} Compiling model...")
     model = torch.compile(model)
+
+    # Wrap model in DDP/DP AFTER compilation for better kernel stability
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank])
+        if is_main:
+            print(f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})")
+    elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
+        print(f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel.")
+        model = nn.DataParallel(model)
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
@@ -439,9 +448,6 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             train_cfg,
             get_time_info,
         )
-
-    if world_size > 1:
-        dist.destroy_process_group()
 
 
 def save_checkpoint(
