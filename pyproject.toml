@@ -46,6 +46,7 @@ quickmt-eval = "quickmt_train.evaluate:main"
 quickmt-optimize = "quickmt_train.optimize_train:main"
 quickmt-clean-embeddings = "quickmt_train.filter_static_embeddings:main"
 quickmt-clean-primary = "quickmt_train.filter_basic:main"
+quickmt-dataset-to-files = "quickmt_train.dataset_to_files:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
