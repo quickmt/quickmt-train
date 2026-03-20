@@ -8,8 +8,10 @@ import sacrebleu
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
 try:
     from aim import Run
+
     AIM_AVAILABLE = True
 except ImportError:
     AIM_AVAILABLE = False
@@ -67,7 +69,6 @@ def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
         print(f"  {key}: {value}")
 
     print("-" * 60)
-
 
 
 def setup_dist(train_cfg):
@@ -146,16 +147,31 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     is_main = rank == 0
 
     try:
-        _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info)
+        _train_impl(
+            model_cfg,
+            data_cfg,
+            train_cfg,
+            rank,
+            local_rank,
+            world_size,
+            is_main,
+            get_time_info,
+        )
     finally:
         if world_size > 1:
             dist.destroy_process_group()
 
 
-def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info):
+def _train_impl(
+    model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info
+):
 
     if train_cfg.device == "auto":
-        device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
+        device = (
+            torch.device(f"cuda:{local_rank}")
+            if torch.cuda.is_available()
+            else torch.device("cpu")
+        )
     else:
         device = torch.device(train_cfg.device)
 
@@ -172,7 +188,7 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
         metrics_path = os.path.join(train_cfg.experiment_name, "metrics.jsonl")
         if os.path.exists(metrics_path):
             os.remove(metrics_path)
-            
+
         print(f"{get_time_info()} Rank: {rank}/{world_size} | Local Rank: {local_rank}")
         print(f"{get_time_info()} Using device: {device}")
 
@@ -228,11 +244,21 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
 
     # Wrap model in DDP/DP
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            find_unused_parameters=False,  # avoids O(params) scan each backward
+            gradient_as_bucket_view=True,  # eliminates a memory copy per all-reduce
+            broadcast_buffers=False,  # no batchnorm buffers to sync
+        )
         if is_main:
-            print(f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})")
+            print(
+                f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
+            )
     elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
-        print(f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel.")
+        print(
+            f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
+        )
         model = nn.DataParallel(model)
 
     if is_main:
@@ -329,6 +355,7 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
             context = model.no_sync()
         else:
             from contextlib import nullcontext
+
             context = nullcontext()
 
         with context:
@@ -705,6 +732,7 @@ def run_quick_test(
 
 def main():
     import fire
+
     fire.Fire(train_cli)
 
 
