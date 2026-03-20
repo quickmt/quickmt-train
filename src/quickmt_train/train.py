@@ -228,7 +228,14 @@ def _train_impl(model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is
 
     # Wrap model in DDP/DP
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            find_unused_parameters=False,      # avoids O(params) scan each backward
+            gradient_as_bucket_view=True,      # eliminates a memory copy per all-reduce
+            broadcast_buffers=False,           # no batchnorm buffers to sync
+        )
+
         if is_main:
             print(f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})")
     elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
