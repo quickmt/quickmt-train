@@ -73,10 +73,10 @@ class DataConfig:
 
     # Streaming & Batching
     max_tokens_per_batch: int = 6000
-    buffer_size: int = 50000
-    num_workers: int = 2
+    buffer_size: int = 10000
+    num_workers: int = 4
     prefetch_factor: int = 64
-    pad_multiple: int = 16
+    pad_multiple: int = 8
 
     # N-best sampling
     src_spm_nbest_size: int = 1

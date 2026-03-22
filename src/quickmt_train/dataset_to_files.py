@@ -31,11 +31,8 @@ def convert(
         tgt_filename = f"{dataset_name.split('/')[-1]}.{tgt_lang}"
 
     # 1. Load dataset (streaming=False is fine if it fits in RAM/cache)
-    ds = datasets.load_dataset(dataset_name, split="train")
-
-    # 2. Limit the dataset if necessary
-    if limit < len(ds):
-        ds = ds.select(range(limit))
+    print("Loading dataset")
+    ds = datasets.load_dataset(dataset_name, split="train", streaming=False)
 
     # Clear files if they exist
     for f in [src_filename, tgt_filename]:
@@ -47,11 +44,15 @@ def convert(
         with open(src_filename, "a", encoding="utf-8") as f_src, open(
             tgt_filename, "a", encoding="utf-8"
         ) as f_tgt:
-            f_src.write("\n".join(batch[src_lang]) + "\n")
-            f_tgt.write("\n".join(batch[tgt_lang]) + "\n")
-        return {}  # Map expects a return, even if empty
+            if len(batch) > 0:
+                f_src.write("\n".join(batch[src_lang]) + "\n")
+                f_tgt.write("\n".join(batch[tgt_lang]) + "\n")
+            else:
+                # Map expects a return, even if empty
+                return {}
 
     # 4. Execute with multiple processes (num_proc) and batching
+    print("Creating output files: ", src_filename, tgt_filename)
     ds.map(
         write_batches,
         batched=True,
@@ -59,6 +60,8 @@ def convert(
         num_proc=num_proc,  # Use all available cores
         desc="Downloading data",
     )
+
+    print("Done!")
 
 
 def main():

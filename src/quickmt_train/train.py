@@ -239,8 +239,11 @@ def _train_impl(
     # NOTE: torch.compile is disabled for multi-GPU DDP runs.
     # The TorchInductor compiler struggles with symbolic shape reasoning
     # (pow_by_natural warnings) causing some ranks to hang indefinitely
-    # during compilation while others spin-wait in NCCL. Re-enable for
-    # single-GPU training if desired: model = torch.compile(model)
+    # during compilation while others spin-wait in NCCL.
+    if world_size == 1 and not (torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]):
+        if is_main:
+            print(f"{get_time_info()} Enabling torch.compile for single-GPU training")
+        model = torch.compile(model, dynamic=True)
 
     # Wrap model in DDP/DP
     if world_size > 1:
@@ -270,6 +273,7 @@ def _train_impl(
         weight_decay=train_cfg.weight_decay,
         eps=train_cfg.adam_eps,
         betas=(train_cfg.adam_beta1, train_cfg.adam_beta2),
+        fused=True if device.type == "cuda" else False,
     )
 
     # Scheduler
@@ -314,7 +318,7 @@ def _train_impl(
 
     # Loop
     model.train()
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     autocast_dtype = (
         torch.bfloat16 if train_cfg.precision in ("bf16", "bfloat16") else torch.float32
     )
@@ -380,7 +384,7 @@ def _train_impl(
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
             optimizer.step()
             scheduler.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             last_batch_loss = accum_loss / max(1, accum_tokens)
             accum_loss = 0
