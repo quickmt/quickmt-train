@@ -129,6 +129,7 @@ class EncoderLayer(nn.Module):
             x,
             attn_mask=src_mask,
             key_padding_mask=src_key_padding_mask,
+            is_causal=is_causal,
             need_weights=False,
         )[0]
         src = src + self.dropout(x)
@@ -185,6 +186,7 @@ class DecoderLayer(nn.Module):
             x,
             attn_mask=tgt_mask,
             key_padding_mask=tgt_key_padding_mask,
+            is_causal=tgt_is_causal,
             need_weights=False,
         )[0]
         tgt = tgt + self.dropout(x)
@@ -197,6 +199,7 @@ class DecoderLayer(nn.Module):
             memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
+            is_causal=memory_is_causal,
             need_weights=False,
         )[0]
         tgt = tgt + self.dropout(x)
@@ -295,6 +298,8 @@ class Seq2SeqTransformer(nn.Module):
         memory_mask=None,
         tgt_key_padding_mask=None,
         memory_key_padding_mask=None,
+        tgt_is_causal=False,
+        memory_is_causal=False,
     ):
         tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
 
@@ -329,6 +334,8 @@ class Seq2SeqTransformer(nn.Module):
             memory_mask=memory_mask,
             tgt_key_padding_mask=tgt_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
+            tgt_is_causal=tgt_is_causal,
+            memory_is_causal=memory_is_causal,
         )
         return out
 
@@ -368,29 +375,38 @@ class Seq2SeqTransformer(nn.Module):
             tgt_input,
             memory,
             tgt_mask=tgt_mask,
+            tgt_is_causal=True,
             tgt_key_padding_mask=tgt_padding_mask,
             memory_key_padding_mask=src_padding_mask,
         )
 
-        # 3. Project
-        logits = self.project(outs)
-
-        # 4. Loss
+        # 3 & 4. Project and Loss
         mask = tgt_out != self.config.pad_id
         num_tokens = mask.sum()
 
-        loss = nn.functional.cross_entropy(
-            logits.reshape(-1, self.config.vocab_size_tgt),
-            tgt_out.reshape(-1),
-            ignore_index=self.config.pad_id,
-            label_smoothing=label_smoothing,
-            reduction="sum",
-        )
-
         if return_outputs:
+            logits = self.project(outs)
+            loss = nn.functional.cross_entropy(
+                logits.reshape(-1, self.config.vocab_size_tgt),
+                tgt_out.reshape(-1),
+                ignore_index=self.config.pad_id,
+                label_smoothing=label_smoothing,
+                reduction="sum",
+            )
             return loss, (logits, num_tokens)
+        else:
+            # Optimal path for training: only project valid tokens
+            outs_flat = outs[mask]
+            logits_flat = self.project(outs_flat)
+            tgt_out_flat = tgt_out[mask]
 
-        return loss, num_tokens
+            loss = nn.functional.cross_entropy(
+                logits_flat,
+                tgt_out_flat,
+                label_smoothing=label_smoothing,
+                reduction="sum",
+            )
+            return loss, num_tokens
 
     @torch.no_grad()
     def generate(self, src, max_len=None, bos_id=None, eos_id=None, enc_output=None):
@@ -417,7 +433,7 @@ class Seq2SeqTransformer(nn.Module):
                 device
             )
             out = self.decode(
-                ys, memory, tgt_mask=tgt_mask, memory_key_padding_mask=src_padding_mask
+                ys, memory, tgt_mask=tgt_mask, tgt_is_causal=True, memory_key_padding_mask=src_padding_mask
             )
 
             # Project last token
@@ -479,6 +495,7 @@ class Seq2SeqTransformer(nn.Module):
                 flat_inputs,
                 memory,
                 tgt_mask=tgt_mask,
+                tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
 
