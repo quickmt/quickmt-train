@@ -242,8 +242,12 @@ def _train_impl(
     # during compilation while others spin-wait in NCCL.
     if world_size == 1 and not (torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]):
         if is_main:
-            print(f"{get_time_info()} Enabling torch.compile for single-GPU training")
-        model = torch.compile(model, dynamic=True)
+            print(f"{get_time_info()} Attempting to enable torch.compile for single-GPU training")
+        try:
+            model = torch.compile(model, dynamic=True)
+        except Exception as e:
+            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
+            print(f"{get_time_info()} Falling back to non-compiled mode")
 
     # Wrap model in DDP/DP
     if world_size > 1:
