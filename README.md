@@ -2,6 +2,16 @@
 
 Experimenting with training Neural Machine Translation (NMT) models from scratch using PyTorch.
 
+
+## WARNING - WORK IN PROGRESS!!!
+
+This project is an active work in progress. There is still some work to be done:
+
+* Validation metrics do not seem to be calculated correctly
+* The `generate` and `beam_search` methods in `model.py` does not seem to be implemented correctly
+* ... etc (see open issues)
+
+
 ## Key Features
 
 
@@ -32,14 +42,16 @@ Experimenting with training Neural Machine Translation (NMT) models from scratch
 - **CTranslate2 Export**: Script to convert PyTorch models to CTranslate2 format for production deployment
 - **quickmt compatible**: Models can be used with the quickmt library for inference
 
+## Installation
 
-## TODO
+# We suggest installing `quickmt-train` within a fresh conda/mamba environment:
 
-This is a start but there is still some work to be done:
-
-* Validation metrics do not seem to be calculated correctly
-* The `generate` and `beam_search` methods in `model.py` does not seem to be implemented correctly
-* ... etc (see open issues)
+```bash
+conda create -n quickmt-train python=3.12 pip
+conda activate quickmt-train
+git clone https://github.com/quickmt/quickmt-train.git
+pip install -e ./quickmt-train/
+```
 
 
 ## Usage

@@ -9,6 +9,9 @@ Suppose you want to train a NMT model for Icelandic->English translation.
 First make sure you have `quickmt-train` installed:
 
 ```bash
+# We suggest setting up a fresh conda environment
+conda create -n quickmt-train python=3.12 pip
+conda activate quickmt-train
 git clone https://github.com/quickmt/quickmt-train.git
 pip install -e ./quickmt-train/
 ```
