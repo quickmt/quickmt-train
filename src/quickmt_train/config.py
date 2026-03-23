@@ -18,7 +18,7 @@ class ModelConfig:
     activation: str = "gelu"
     use_checkpoint: bool = False
     ff_bias: bool = False
-    mlp_type: str = "gated"  # "standard" or "gated"
+    mlp_type: str = "standard"  # "standard" or "gated"
     layernorm_eps: float = 1e-5
     norm_type: str = "rmsnorm"  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
@@ -93,7 +93,7 @@ class TrainConfig:
     aim_repo: str = "~/.aim"
 
     # Optimizer
-    lr: float = 8.5e-4
+    lr: float = 1.0e-3
     weight_decay: float = 0.01
     adam_eps: float = 1e-6
     label_smoothing: float = 0.1
@@ -136,7 +136,7 @@ class ExportConfig:
     """Configuration for checkpoint averaging, quantization, and export."""
 
     # Averaging
-    k: int = 1
+    k: int = 5  
 
     # Quantization
     export_int8: bool = False
@@ -146,7 +146,7 @@ class ExportConfig:
 
     # Inference Defaults
     beam_size: int = 5
-    max_len: int = 100
+    max_len: int = 256
     batch_size: int = 32
 
     # CT2 specific

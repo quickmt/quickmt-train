@@ -40,6 +40,7 @@ Repository = "https://github.com/quickmt/quickmt-train"
 
 [project.scripts]
 quickmt-train = "quickmt_train.train:main"
+quickmt-flores-download = "quickmt_train.flores_to_files:main"
 quickmt-avg = "quickmt_train.average_checkpoints:main"
 quickmt-export = "quickmt_train.convert_to_ct2:main"
 quickmt-eval = "quickmt_train.evaluate:main"
@@ -47,6 +48,7 @@ quickmt-optimize = "quickmt_train.optimize_train:main"
 quickmt-clean-embeddings = "quickmt_train.filter_static_embeddings:main"
 quickmt-clean-primary = "quickmt_train.filter_basic:main"
 quickmt-dataset-to-files = "quickmt_train.dataset_to_files:main"
+quickmt-dataset-upload = "quickmt_train.corpus_to_hf:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
