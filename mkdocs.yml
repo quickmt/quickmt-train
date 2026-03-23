@@ -49,8 +49,8 @@ plugins:
 
 nav:
   - Home: index.md
-  - Overview: overview.md
-  - Tutorial: tutorial.md
+  - Quickstart: quickstart.md
+  - Corpus Creation: corpus_creation.md
   - Reference:
       - Training: reference/train.md
       - Checkpoint Averaging: reference/average.md
