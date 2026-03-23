@@ -240,7 +240,7 @@ def _train_impl(
     # The TorchInductor compiler struggles with symbolic shape reasoning
     # (pow_by_natural warnings) causing some ranks to hang indefinitely
     # during compilation while others spin-wait in NCCL.
-    if world_size == 1 and not (torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]):
+    if world_size == 1 and train_cfg.enable_torch_compile and not (torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]):
         if is_main:
             print(f"{get_time_info()} Attempting to enable torch.compile for single-GPU training")
         try:

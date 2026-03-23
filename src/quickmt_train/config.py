@@ -126,6 +126,9 @@ class TrainConfig:
     resume_from: str = ""  # Path to .pt or .safetensors checkpoint
     reset_optimizer: bool = False  # Reset optimizer/scheduler state (for fine-tuning)
 
+    # torch_compile
+    enable_torch_compile: bool = True
+
     @property
     def checkpoint_dir(self) -> str:
         return os.path.join(self.experiment_name, "checkpoints")
