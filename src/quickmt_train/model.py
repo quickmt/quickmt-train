@@ -4,22 +4,16 @@ import math
 import torch.ao.quantization
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, d_model, eps=1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(d_model))
-
-    def forward(self, x):
-        # Calculate RMS in float32 for stability
-        dtype = x.dtype
-        x_f32 = x.float()
-        norm_x = torch.mean(x_f32**2, dim=-1, keepdim=True)
-        x_normed = x_f32 * torch.rsqrt(norm_x + self.eps)
-        return (self.weight.float() * x_normed).to(dtype)
-
-
 class PositionalEncoding(nn.Module):
+    """
+    Injects information about the relative or absolute position of the tokens in the sequence.
+
+    Args:
+        d_model (int): The dimension of the model.
+        dropout (float): Dropout probability. Defaults to 0.1.
+        max_len (int): Maximum sequence length. Defaults to 5000.
+    """
+
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -35,21 +29,57 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, x):
+        """
+        Forward pass for positional encoding.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, d_model).
+
+        Returns:
+            torch.Tensor: Output tensor with positional encoding added and dropout applied.
+        """
         x = x + self.pe[:, : x.size(1), :]
         return self.dropout(x)
 
 
 class TokenEmbedding(nn.Module):
+    """
+    Converts token IDs into dense vectors of d_model dimension.
+
+    Args:
+        vocab_size (int): Size of the vocabulary.
+        d_model (int): The dimension of the model.
+    """
+
     def __init__(self, vocab_size, d_model):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.d_model = d_model
 
     def forward(self, tokens):
+        """
+        Args:
+            tokens (torch.Tensor): Token IDs of shape (batch_size, seq_len).
+
+        Returns:
+            torch.Tensor: Embedded tokens scaled by sqrt(d_model).
+        """
         return self.embedding(tokens.long()) * math.sqrt(self.d_model)
 
 
 class FeedForward(nn.Module):
+    """
+    Standard or Gated Feed-Forward network.
+
+    Args:
+        d_model (int): The dimension of the model.
+        ffn_dim (int): The dimension of the feed-forward network's hidden layer.
+        dropout (float): Dropout probability. Defaults to 0.1.
+        activation (str): Activation function to use ('gelu', 'silu', 'swish', or 'relu'). Defaults to "gelu".
+        bias (bool): Whether to use bias in linear layers. Defaults to False.
+        mlp_type (str): Type of MLP ('standard' or 'gated'). Defaults to "standard".
+    """
+
     def __init__(
         self,
         d_model,
@@ -78,6 +108,15 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
+        """
+        Forward pass for FeedForward.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
         if self.mlp_type == "gated":
             gate_up = self.gate_up_proj(x)
             gate, up = gate_up.chunk(2, dim=-1)
@@ -92,13 +131,40 @@ class FeedForward(nn.Module):
 
 
 def get_norm(d_model, eps, bias, norm_type):
+    """
+    Helper function to get normalization layer.
+
+    Args:
+        d_model (int): The dimension of the model.
+        eps (float): A small value for numerical stability.
+        bias (bool): Whether to use bias in the normalization layer.
+        norm_type (str): Type of normalization ('rmsnorm' or 'layernorm').
+
+    Returns:
+        nn.Module: The normalization layer.
+    """
     if norm_type == "rmsnorm":
-        return RMSNorm(d_model, eps=eps)
+        return nn.RMSNorm(d_model, eps=eps)
     else:
         return nn.LayerNorm(d_model, eps=eps, bias=bias)
 
 
 class EncoderLayer(nn.Module):
+    """
+    Transformer Encoder Layer with pre-normalization.
+
+    Args:
+        d_model (int): The dimension of the model.
+        nhead (int): The number of attention heads.
+        ffn_dim (int): The dimension of the feed-forward network.
+        layernorm_eps (float): A small value for numerical stability in normalization layers.
+        dropout (float): Dropout probability. Defaults to 0.1.
+        activation (str): Activation function for FFN. Defaults to "gelu".
+        bias (bool): Whether to use bias in linear and attention layers. Defaults to False.
+        mlp_type (str): Type of MLP in FFN. Defaults to "standard".
+        norm_type (str): Type of normalization. Defaults to "layernorm".
+    """
+
     def __init__(
         self,
         d_model,
@@ -121,6 +187,18 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None, is_causal=False):
+        """
+        Forward pass for EncoderLayer.
+
+        Args:
+            src (torch.Tensor): Source sequence.
+            src_mask (torch.Tensor, optional): Attention mask for src.
+            src_key_padding_mask (torch.Tensor, optional): Padding mask for src.
+            is_causal (bool): Whether the attention is causal. Defaults to False.
+
+        Returns:
+            torch.Tensor: Processed source sequence.
+        """
         # Pre-norm
         x = self.norm1(src)
         x = self.self_attn(
@@ -141,6 +219,21 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
+    """
+    Transformer Decoder Layer with pre-normalization and cross-attention.
+
+    Args:
+        d_model (int): The dimension of the model.
+        nhead (int): The number of attention heads.
+        ffn_dim (int): The dimension of the feed-forward network.
+        layernorm_eps (float): A small value for numerical stability in normalization layers.
+        dropout (float): Dropout probability. Defaults to 0.1.
+        activation (str): Activation function for FFN. Defaults to "gelu".
+        bias (bool): Whether to use bias in linear and attention layers. Defaults to False.
+        mlp_type (str): Type of MLP in FFN. Defaults to "standard".
+        norm_type (str): Type of normalization. Defaults to "layernorm".
+    """
+
     def __init__(
         self,
         d_model,
@@ -177,6 +270,22 @@ class DecoderLayer(nn.Module):
         tgt_is_causal=False,
         memory_is_causal=False,
     ):
+        """
+        Forward pass for DecoderLayer.
+
+        Args:
+            tgt (torch.Tensor): Target sequence.
+            memory (torch.Tensor): Output from encoder.
+            tgt_mask (torch.Tensor, optional): Self-attention mask for tgt.
+            memory_mask (torch.Tensor, optional): Cross-attention mask for memory.
+            tgt_key_padding_mask (torch.Tensor, optional): Padding mask for tgt.
+            memory_key_padding_mask (torch.Tensor, optional): Padding mask for memory.
+            tgt_is_causal (bool): Whether self-attention is causal. Defaults to False.
+            memory_is_causal (bool): Whether cross-attention is causal. Defaults to False.
+
+        Returns:
+            torch.Tensor: Processed target sequence.
+        """
         # Pre-norm
         x = self.norm1(tgt)
         # Self attention
@@ -212,6 +321,16 @@ class DecoderLayer(nn.Module):
 
 
 class Seq2SeqTransformer(nn.Module):
+    """
+    Sequence-to-sequence Transformer model.
+
+    Args:
+        config: Configuration object containing model hyperparameters.
+            Required attributes: vocab_size_src, vocab_size_tgt, d_model, dropout, max_len,
+            n_heads, ffn_dim, layernorm_eps, activation, ff_bias, mlp_type, norm_type,
+            enc_layers, dec_layers, tie_decoder_embeddings, pad_id, bos_id, eos_id.
+    """
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -271,6 +390,16 @@ class Seq2SeqTransformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def encode(self, src, src_mask=None):
+        """
+        Encode the source sequence.
+
+        Args:
+            src (torch.Tensor): Source sequence of shape (batch_size, src_len).
+            src_mask (torch.Tensor, optional): Encoder attention mask.
+
+        Returns:
+            torch.Tensor: Encoded sequence (memory).
+        """
         src_emb = self.positional_encoding(self.src_tok_emb(src))
         # Create padding mask: True where padding tokens exist
         src_padding_mask = (src == self.config.pad_id).to(torch.bool)
@@ -301,6 +430,22 @@ class Seq2SeqTransformer(nn.Module):
         tgt_is_causal=False,
         memory_is_causal=False,
     ):
+        """
+        Decode the target sequence using the encoded source.
+
+        Args:
+            tgt (torch.Tensor): Target sequence of shape (batch, tgt_len).
+            memory (torch.Tensor): Output from encoder.
+            tgt_mask (torch.Tensor, optional): Self-attention mask for tgt.
+            memory_mask (torch.Tensor, optional): Cross-attention mask for memory.
+            tgt_key_padding_mask (torch.Tensor, optional): Padding mask for tgt.
+            memory_key_padding_mask (torch.Tensor, optional): Padding mask for memory.
+            tgt_is_causal (bool): Whether self-attention is causal.
+            memory_is_causal (bool): Whether cross-attention is causal.
+
+        Returns:
+            torch.Tensor: Decoded features.
+        """
         tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
 
         # Ensure all masks are boolean for quantizable MultiheadAttention
@@ -340,9 +485,33 @@ class Seq2SeqTransformer(nn.Module):
         return out
 
     def project(self, x):
+        """
+        Project hidden features to vocabulary logits.
+
+        Args:
+            x (torch.Tensor): Output from decoder.
+
+        Returns:
+            torch.Tensor: Logits of shape (..., vocab_size_tgt).
+        """
         return self.generator(x)
 
     def forward(self, src, tgt, return_outputs=False, label_smoothing=0.0):
+        """
+        Single training step: encode, decode, and calculate loss.
+
+        Args:
+            src (torch.Tensor): Source sequences.
+            tgt (torch.Tensor): Target sequences (including BOS and EOS).
+            return_outputs (bool): Whether to return logits and num_tokens. Defaults to False.
+            label_smoothing (float): Label smoothing coefficient. Defaults to 0.0.
+
+        Returns:
+            If return_outputs is False:
+                tuple: (loss, num_tokens)
+            If return_outputs is True:
+                tuple: (loss, (logits, num_tokens))
+        """
         # src: (batch, src_len)
         # tgt: (batch, tgt_len) - contains BOS and EOS
 
@@ -359,13 +528,11 @@ class Seq2SeqTransformer(nn.Module):
         tgt_padding_mask = (tgt_input == self.config.pad_id).to(torch.bool)
 
         # Causal mask for decoder autogression
+        # Create causal mask for training
         tgt_len = tgt_input.size(1)
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_len).to(
-            src.device
+        tgt_mask = torch.triu(
+            torch.ones(tgt_len, tgt_len, device=src.device, dtype=torch.bool), diagonal=1
         )
-        # Convert to bool
-        if tgt_mask.dtype != torch.bool:
-            tgt_mask = tgt_mask < 0
 
         # 1. Encode
         memory = self.encode(src)
@@ -375,7 +542,7 @@ class Seq2SeqTransformer(nn.Module):
             tgt_input,
             memory,
             tgt_mask=tgt_mask,
-            tgt_is_causal=True,
+            tgt_is_causal=False,
             tgt_key_padding_mask=tgt_padding_mask,
             memory_key_padding_mask=src_padding_mask,
         )
@@ -410,6 +577,19 @@ class Seq2SeqTransformer(nn.Module):
 
     @torch.no_grad()
     def generate(self, src, max_len=None, bos_id=None, eos_id=None, enc_output=None):
+        """
+        Greedy decoding for generation.
+
+        Args:
+            src (torch.Tensor): Source sequences.
+            max_len (int, optional): Maximum generation length.
+            bos_id (int, optional): Beginning-of-sentence token ID.
+            eos_id (int, optional): End-of-sentence token ID.
+            enc_output (torch.Tensor, optional): Pre-computed encoder output.
+
+        Returns:
+            torch.Tensor: Generated token IDs.
+        """
         max_len = max_len or self.config.max_len
         bos_id = bos_id if bos_id is not None else self.config.bos_id
         eos_id = eos_id if eos_id is not None else self.config.eos_id
@@ -429,11 +609,16 @@ class Seq2SeqTransformer(nn.Module):
         finished = torch.zeros(bs, dtype=torch.bool, device=device)
 
         for i in range(max_len):
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(ys.size(1)).to(
-                device
+            sz = ys.size(1)
+            tgt_mask = torch.triu(
+                torch.ones(sz, sz, device=device, dtype=torch.bool), diagonal=1
             )
             out = self.decode(
-                ys, memory, tgt_mask=tgt_mask, tgt_is_causal=True, memory_key_padding_mask=src_padding_mask
+                ys,
+                memory,
+                tgt_mask=tgt_mask,
+                tgt_is_causal=False,
+                memory_key_padding_mask=src_padding_mask,
             )
 
             # Project last token
@@ -455,6 +640,19 @@ class Seq2SeqTransformer(nn.Module):
 
     @torch.no_grad()
     def beam_search(self, src, max_len=None, beam_size=5, bos_id=None, eos_id=None):
+        """
+        Beam search decoding for generation.
+
+        Args:
+            src (torch.Tensor): Source sequences.
+            max_len (int, optional): Maximum generation length.
+            beam_size (int): Number of beams. Defaults to 5.
+            bos_id (int, optional): Beginning-of-sentence token ID.
+            eos_id (int, optional): End-of-sentence token ID.
+
+        Returns:
+            torch.Tensor: Best sequence of token IDs for each input sequence.
+        """
         max_len = max_len or self.config.max_len
         bos_id = bos_id if bos_id is not None else self.config.bos_id
         eos_id = eos_id if eos_id is not None else self.config.eos_id
@@ -485,9 +683,9 @@ class Seq2SeqTransformer(nn.Module):
         for i in range(max_len):
             curr_seq_len = inputs.size(2)
             flat_inputs = inputs.view(bs * beam_size, curr_seq_len)
-
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(curr_seq_len).to(
-                device
+            tgt_mask = torch.triu(
+                torch.ones(curr_seq_len, curr_seq_len, device=device, dtype=torch.bool),
+                diagonal=1,
             )
 
             # Decode
@@ -495,7 +693,7 @@ class Seq2SeqTransformer(nn.Module):
                 flat_inputs,
                 memory,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=True,
+                tgt_is_causal=False,
                 memory_key_padding_mask=src_padding_mask,
             )
 
@@ -542,8 +740,8 @@ class Seq2SeqTransformer(nn.Module):
 
     def convert_to_int8(self):
         """
-        Convert the PTQ-calibrated model to a quantized INT8 model.
-        This should be called after calibrate().
+        Convert the model to a quantized INT8 model using static quantization (PTQ).
+        Should be called after calibration with calibrate().
         """
         self.eval()
         torch.ao.quantization.convert(self, inplace=True)
@@ -551,8 +749,12 @@ class Seq2SeqTransformer(nn.Module):
 
     def calibrate(self, loader, num_batches=10):
         """
-        Run a few batches of data through the model to update quantization observers.
-        This is useful after averaging weights.
+        Update quantization observers by running sample data through the model.
+        Useful for Post-Training Quantization (PTQ) after training or weight averaging.
+
+        Args:
+            loader (DataLoader): Data loader providing (src, tgt) pairs.
+            num_batches (int): Number of batches to use for calibration. Defaults to 10.
         """
         device = next(self.parameters()).device
         self.eval()

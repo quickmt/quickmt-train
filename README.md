@@ -56,6 +56,8 @@ pip install -e ./quickmt-train/
 
 ## Usage
 
+See the [quickstart](https://quickmt.github.io/quickmt-train/quickstart/) for a complete example.
+
 ```bash
 # Create a config file (see the examples)
 vim configs/faen-tiny.yaml
