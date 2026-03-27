@@ -387,9 +387,22 @@ def _train_impl(
 
         if (batch_idx + 1) % train_cfg.accum_steps == 0:
             # Scale gradients by total number of tokens in the accumulation bucket
+            # For DDP, we must synchronize the token count across all processes to avoid weight divergence.
+            if world_size > 1:
+                token_tensor = torch.tensor(
+                    [accum_tokens], device=device, dtype=torch.float32
+                )
+                dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
+                global_accum_tokens = token_tensor.item()
+            else:
+                global_accum_tokens = float(accum_tokens)
+
+            # Scale and clip
             for p in model.parameters():
                 if p.grad is not None:
-                    p.grad.data.div_(max(1, accum_tokens))
+                    # DDP averages gradients across ranks, so we multiply by world_size
+                    # before dividing by global token count to get the true token-level average.
+                    p.grad.data.mul_(world_size).div_(max(1.0, global_accum_tokens))
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
             optimizer.step()

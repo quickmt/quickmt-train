@@ -412,8 +412,7 @@ class Seq2SeqTransformer(nn.Module):
                 else src_mask.to(torch.bool)
             )
 
-        # Ensure the encoder itself uses boolean masks internally
-        # This is a workaround for quantizable MultiheadAttention
+        # Standard encoder is non-causal
         memory = self.encoder(
             src_emb, mask=src_mask, src_key_padding_mask=src_padding_mask
         )
@@ -448,7 +447,7 @@ class Seq2SeqTransformer(nn.Module):
         """
         tgt_emb = self.positional_encoding(self.tgt_tok_emb(tgt))
 
-        # Ensure all masks are boolean for quantizable MultiheadAttention
+        # Ensure all masks are boolean
         if tgt_mask is not None and tgt_mask.dtype != torch.bool:
             tgt_mask = (
                 (tgt_mask < 0)
@@ -529,20 +528,21 @@ class Seq2SeqTransformer(nn.Module):
 
         # Causal mask for decoder autogression
         # Create causal mask for training
+        # 1. Encode
+        memory = self.encode(src)
+
+        # Causal mask for decoder autogression
         tgt_len = tgt_input.size(1)
         tgt_mask = torch.triu(
             torch.ones(tgt_len, tgt_len, device=src.device, dtype=torch.bool), diagonal=1
         )
 
-        # 1. Encode
-        memory = self.encode(src)
-
-        # 2. Decode
+        # 2. Decode using native causal flag AND explicit mask to fix torch.compile compatibility
         outs = self.decode(
             tgt_input,
             memory,
             tgt_mask=tgt_mask,
-            tgt_is_causal=False,
+            tgt_is_causal=True,
             tgt_key_padding_mask=tgt_padding_mask,
             memory_key_padding_mask=src_padding_mask,
         )
@@ -617,7 +617,7 @@ class Seq2SeqTransformer(nn.Module):
                 ys,
                 memory,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=False,
+                tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
 
@@ -693,7 +693,7 @@ class Seq2SeqTransformer(nn.Module):
                 flat_inputs,
                 memory,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=False,
+                tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
 
