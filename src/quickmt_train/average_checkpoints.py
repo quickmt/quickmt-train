@@ -9,20 +9,30 @@ from .data import PrepareData
 
 
 def main():
-    import fire
     fire.Fire(average_checkpoints_cli)
 
 
-def average_checkpoints_cli(experiment_dir: str):
+def average_checkpoints_cli(experiment_dir: str, **kwargs):
     """
     Average the last k checkpoints and save as safetensors/INT8.
 
     Args:
         experiment_dir: Path to experiment directory
+        **kwargs: Overrides for configuration parameters
     """
     model_cfg, data_cfg, train_cfg, export_cfg = load_config(
         os.path.join(experiment_dir, "config.yaml")
     )
+
+    # Apply overrides
+    for key, value in kwargs.items():
+        found = False
+        for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
+            if hasattr(cfg, key):
+                setattr(cfg, key, value)
+                found = True
+        if not found:
+            print(f"Warning: Configuration key '{key}' not found in any config object.")
 
     # 1. Find the best k models based on validation perplexity
     metrics_path = os.path.join(experiment_dir, "metrics.jsonl")
@@ -205,4 +215,4 @@ def average_checkpoints_cli(experiment_dir: str):
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    main()
