@@ -6,7 +6,6 @@ import sacrebleu
 
 
 def main():
-    import fire
     fire.Fire(evaluate_cli)
 
 
@@ -20,6 +19,7 @@ def evaluate_cli(
     batch_size: int = 32,
     device: str = "auto",
     compute_type: str = "auto",
+    **kwargs,
 ):
     """
     Evaluate a CTranslate2 model.
@@ -34,10 +34,21 @@ def evaluate_cli(
         batch_size: Batch size for translation
         device: Auto detect GPU and use if available (or cuda, cpu)
         compute_type: CTranslate2 compute type
+        **kwargs: Overrides for configuration parameters
     """
     # Load defaults from config if available
     if config:
         model_cfg, data_cfg, train_cfg, export_cfg = load_config(config)
+
+        # Apply overrides
+        for key, value in kwargs.items():
+            found = False
+            for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
+                if hasattr(cfg, key):
+                    setattr(cfg, key, value)
+                    found = True
+            if not found:
+                print(f"Warning: Configuration key '{key}' not found in any config object.")
 
         if src_file is None:
             src_file = data_cfg.src_dev_path
@@ -45,12 +56,12 @@ def evaluate_cli(
             ref_file = data_cfg.tgt_dev_path
 
         # Pull defaults from export_cfg if not specified on CLI
-        # (Assuming fire defaults are already set, we only override if user didn't provide)
-        if beam_size == 5:  # default in function signature
+        # (Checking if they match the function defaults to see if user provided them)
+        if beam_size == 5:
             beam_size = export_cfg.beam_size
-        if max_len == 100:  # default in parser
+        if max_len == 100:
             max_len = export_cfg.max_len
-        if batch_size == 32:  # default in parser
+        if batch_size == 32:
             batch_size = export_cfg.batch_size
         if device == "auto":
             device = train_cfg.device
@@ -67,9 +78,9 @@ def evaluate_cli(
 
     # Load data
     with open(src_file, "r", encoding="utf-8") as f:
-        src_lines = [l.strip() for l in f.readlines()]
+        src_lines = [line.strip() for line in f.readlines()]
     with open(ref_file, "r", encoding="utf-8") as f:
-        ref_lines = [l.strip() for l in f.readlines()][: len(src_lines)]
+        ref_lines = [line.strip() for line in f.readlines()][: len(src_lines)]
 
     if len(src_lines) != len(ref_lines):
         print(
@@ -104,4 +115,4 @@ def evaluate_cli(
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    main()

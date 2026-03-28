@@ -529,3 +529,35 @@ def PrepareData(
     )
 
     return train_loader, dev_loader, src_sp, tgt_sp
+def data_cli(config: str, **kwargs):
+    """
+    Data preparation CLI - primarily for training tokenizers.
+
+    Args:
+        config: Path to config file
+        **kwargs: Overrides for configuration parameters
+    """
+    from .config import load_config
+
+    model_cfg, data_cfg, train_cfg, export_cfg = load_config(config)
+
+    # Apply overrides
+    for key, value in kwargs.items():
+        found = False
+        for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
+            if hasattr(cfg, key):
+                setattr(cfg, key, value)
+                found = True
+        if not found:
+            print(f"Warning: Configuration key '{key}' not found in any config object.")
+
+    PrepareData(model_cfg, data_cfg, train_cfg)
+
+
+def main():
+    fire.Fire(data_cli)
+
+
+if __name__ == "__main__":
+    import fire
+    main()

@@ -19,7 +19,7 @@ class ModelConfig:
     use_checkpoint: bool = False
     ff_bias: bool = False
     mlp_type: str = "standard"  # "standard" or "gated"
-    layernorm_eps: float = 1e-5
+    layernorm_eps: float = 1e-6
     norm_type: str = "rmsnorm"  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
 
@@ -139,7 +139,7 @@ class ExportConfig:
     """Configuration for checkpoint averaging, quantization, and export."""
 
     # Averaging
-    k: int = 5  
+    k: int = 5
 
     # Quantization
     export_int8: bool = False

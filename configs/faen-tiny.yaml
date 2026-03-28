@@ -1,14 +1,14 @@
 train:
   experiment_name: "faen-tiny"
   aim_repo: "~/mt/.aim"
-  lr: 2.5e-3
+  lr: 1.75e-3
   accum_steps: 6
   warmup_steps: 5000
-  max_steps: 50000
+  max_steps: 10000
   eval_steps: 1000
   max_checkpoints: 10
   precision: "bf16"
-  grad_clip: 1.0
+  grad_clip: 0.5
 
 data:
   src_lang: "fa"
@@ -18,10 +18,10 @@ data:
   max_tokens_per_batch: 20000
   buffer_size: 100000
   num_workers: 4
-  src_spm_nbest_size: 20
+  src_spm_nbest_size: -1
   src_spm_alpha: 0.5
-  tgt_spm_nbest_size: 20
-  tgt_spm_alpha: 0.5
+  tgt_spm_nbest_size: 1
+  tgt_spm_alpha: 1.0
   corpora:
     - src_file: "data/train.fa"
       tgt_file: "data/train.en"
@@ -38,21 +38,22 @@ data:
       start_step: 0
       #stop_step: 35000
 
-
 model:
   d_model: 256
   enc_layers: 4
   dec_layers: 2
   n_heads: 4
-  ffn_dim: 1024
+  ffn_dim: 512
   max_len: 256
   vocab_size_src: 16000
   vocab_size_tgt: 16000
-  mlp_type: "standard"
+  mlp_type: "gated" # standard or gated
   activation: "gelu" # gelu or silu
-  ff_bias: false
-  norm_type: "rmsnorm" # layernorm or rmsnorm
+  norm_type: "layernorm" # layernorm or rmsnorm
+  ff_bias: true
   tie_decoder_embeddings: false
-  dropout: 0.05
+  dropout: 0.1
+  layernorm_eps: 1.0e-5
 
-
+export:
+  k: 1

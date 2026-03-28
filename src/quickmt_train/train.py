@@ -344,6 +344,8 @@ def _train_impl(
     accum_loss = 0
     accum_tokens = 0
     last_batch_loss = 0.0
+    last_grad_norm = 0.0
+    clipping_count = 0  # Count of clipping events since last log
 
     for batch_idx, (src, tgt) in enumerate(train_loader):
         # Use non_blocking for async data transfer
@@ -404,7 +406,10 @@ def _train_impl(
                     # before dividing by global token count to get the true token-level average.
                     p.grad.data.mul_(world_size).div_(max(1.0, global_accum_tokens))
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
+            last_grad_norm = grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+            if last_grad_norm > train_cfg.grad_clip:
+                clipping_count += 1
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -465,7 +470,8 @@ def _train_impl(
 
             print(
                 f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
-                f"Loss: {last_batch_loss:.4f} | LR: {curr_lr:.6f} | "
+                f"Loss: {last_batch_loss:.4f} | Grad: {last_grad_norm:.4f} "
+                f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | "
                 f"In: {in_tok_s:.0f} tok/s | Out: {out_tok_s:.0f} tok/s"
                 + (f" ({world_size} GPUs)" if world_size > 1 else "")
             )
@@ -479,12 +485,15 @@ def _train_impl(
                     context={"subset": "train"},
                 )
                 run.track(curr_lr, name="lr", step=global_step)
+                run.track(last_grad_norm, name="grad_norm", step=global_step)
+                run.track(clipping_count, name="clipping_count", step=global_step)
                 run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
                 run.track(out_tok_s, name="output_tokens_per_sec", step=global_step)
 
-            # Reset throughput counters
+            # Reset tracking counters
             batch_src_tokens = 0
             batch_tgt_tokens = 0
+            clipping_count = 0
             last_log_time = time.time()
 
     if is_main:
@@ -763,16 +772,28 @@ def main():
     fire.Fire(train_cli)
 
 
-def train_cli(config: str):
+def train_cli(config: str, **kwargs):
     """
     Train a Transformer model.
 
     Args:
         config: Path to config file
+        **kwargs: Overrides for configuration parameters (e.g., --max_steps 100)
     """
     from .config import load_config
 
     model_cfg, data_cfg, train_cfg, _ = load_config(config)
+
+    # Apply overrides
+    for key, value in kwargs.items():
+        if hasattr(train_cfg, key):
+            setattr(train_cfg, key, value)
+        elif hasattr(model_cfg, key):
+            setattr(model_cfg, key, value)
+        elif hasattr(data_cfg, key):
+            setattr(data_cfg, key, value)
+        else:
+            print(f"Warning: Configuration key '{key}' not found in any config object.")
 
     # Make experiment folder if not exists
     os.makedirs(train_cfg.experiment_name, exist_ok=True)

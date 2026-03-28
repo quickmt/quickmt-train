@@ -174,24 +174,29 @@ def convert_vocab(sp_vocab_path):
     return tokens
 
 
-import fire
 
 
-def main():
-    import fire
-    fire.Fire(convert_to_ct2_cli)
-
-
-def convert_to_ct2_cli(experiment_dir: str):
+def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     """
     Convert a trained model to CTranslate2 format.
 
     Args:
         experiment_dir: Path to experiment directory
+        **kwargs: Overrides for configuration parameters
     """
     model_cfg, data_cfg, train_cfg, export_cfg = load_config(
         os.path.join(experiment_dir, "config.yaml")
     )
+
+    # Apply overrides
+    for key, value in kwargs.items():
+        found = False
+        for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
+            if hasattr(cfg, key):
+                setattr(cfg, key, value)
+                found = True
+        if not found:
+            print(f"Warning: Configuration key '{key}' not found in any config object.")
 
     model_file = os.path.join(experiment_dir, "averaged_model.safetensors")
     if not os.path.exists(model_file):
@@ -408,5 +413,9 @@ def convert_to_ct2_cli(experiment_dir: str):
     )
 
 
+def main():
+    fire.Fire(convert_to_ct2_cli)
+
+
 if __name__ == "__main__":
-    fire.Fire(main)
+    main()
