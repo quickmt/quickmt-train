@@ -90,7 +90,7 @@ class TrainConfig:
     """Configuration for the training loop and optimization."""
 
     experiment_name: str = "default"
-    aim_repo: str = "~/.aim"
+    aim_repo: str = "./aim-runs"
 
     # Optimizer
     lr: float = 1.0e-3
@@ -118,7 +118,7 @@ class TrainConfig:
     tf32: bool = True
 
     # Logging & Validation
-    log_steps: int = 1000
+    log_steps: int = 100
     val_max_samples: int = 500
     quick_test_samples: int = 5
 

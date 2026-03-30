@@ -513,47 +513,47 @@ def _train_impl(
                         val_metrics=val_metrics,
                     )
 
+            # Progress Print (Rank 0 only)
+            if is_main and global_step % train_cfg.log_steps == 0:
+                curr_lr = optimizer.param_groups[0]["lr"]
+                elapsed = time.time() - last_log_time
+
+                # Estimate total system throughput: rank 0's count × world_size.
+                # Data is sharded evenly so this is a good approximation, and avoids
+                # introducing any NCCL collectives inside a rank-0-only branch.
+                in_tok_s = batch_src_tokens * world_size / max(1e-6, elapsed)
+                out_tok_s = batch_tgt_tokens * world_size / max(1e-6, elapsed)
+
+                print(
+                    f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
+                    f"Loss: {last_batch_loss:.4f} | Grad: {last_grad_norm:.4f} "
+                    f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | "
+                    f"In: {in_tok_s:.0f} tok/s | Out: {out_tok_s:.0f} tok/s"
+                    + (f" ({world_size} GPUs)" if world_size > 1 else "")
+                )
+
+                # Aim tracking
+                if run:
+                    run.track(
+                        last_batch_loss,
+                        name="loss",
+                        step=global_step,
+                        context={"subset": "train"},
+                    )
+                    run.track(curr_lr, name="lr", step=global_step)
+                    run.track(last_grad_norm, name="grad_norm", step=global_step)
+                    run.track(clipping_count, name="clipping_count", step=global_step)
+                    run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
+                    run.track(out_tok_s, name="output_tokens_per_sec", step=global_step)
+
+                # Reset tracking counters
+                batch_src_tokens = 0
+                batch_tgt_tokens = 0
+                clipping_count = 0
+                last_log_time = time.time()
+
             if global_step >= train_cfg.max_steps:
                 break
-
-        # Progress Print (Rank 0 only)
-        if is_main and batch_idx % train_cfg.log_steps == 0:
-            curr_lr = optimizer.param_groups[0]["lr"]
-            elapsed = time.time() - last_log_time
-
-            # Estimate total system throughput: rank 0's count × world_size.
-            # Data is sharded evenly so this is a good approximation, and avoids
-            # introducing any NCCL collectives inside a rank-0-only branch.
-            in_tok_s = batch_src_tokens * world_size / max(1e-6, elapsed)
-            out_tok_s = batch_tgt_tokens * world_size / max(1e-6, elapsed)
-
-            print(
-                f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
-                f"Loss: {last_batch_loss:.4f} | Grad: {last_grad_norm:.4f} "
-                f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | "
-                f"In: {in_tok_s:.0f} tok/s | Out: {out_tok_s:.0f} tok/s"
-                + (f" ({world_size} GPUs)" if world_size > 1 else "")
-            )
-
-            # Aim tracking
-            if run:
-                run.track(
-                    last_batch_loss,
-                    name="loss",
-                    step=global_step,
-                    context={"subset": "train"},
-                )
-                run.track(curr_lr, name="lr", step=global_step)
-                run.track(last_grad_norm, name="grad_norm", step=global_step)
-                run.track(clipping_count, name="clipping_count", step=global_step)
-                run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
-                run.track(out_tok_s, name="output_tokens_per_sec", step=global_step)
-
-            # Reset tracking counters
-            batch_src_tokens = 0
-            batch_tgt_tokens = 0
-            clipping_count = 0
-            last_log_time = time.time()
 
     if is_main:
         avg_loss = total_loss_sum / max(1, total_tokens_trained)
