@@ -49,11 +49,12 @@ class TokenEmbedding(nn.Module):
     Args:
         vocab_size (int): Size of the vocabulary.
         d_model (int): The dimension of the model.
+        padding_idx (int, optional): Index of the padding token. Defaults to None.
     """
 
-    def __init__(self, vocab_size, d_model):
+    def __init__(self, vocab_size, d_model, padding_idx=None):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.d_model = d_model
 
     def forward(self, tokens):
@@ -335,8 +336,12 @@ class Seq2SeqTransformer(nn.Module):
         super().__init__()
         self.config = config
 
-        self.src_tok_emb = TokenEmbedding(config.vocab_size_src, config.d_model)
-        self.tgt_tok_emb = TokenEmbedding(config.vocab_size_tgt, config.d_model)
+        self.src_tok_emb = TokenEmbedding(
+            config.vocab_size_src, config.d_model, padding_idx=config.pad_id
+        )
+        self.tgt_tok_emb = TokenEmbedding(
+            config.vocab_size_tgt, config.d_model, padding_idx=config.pad_id
+        )
         self.positional_encoding = PositionalEncoding(
             config.d_model, dropout=config.dropout, max_len=config.max_len
         )
@@ -385,9 +390,39 @@ class Seq2SeqTransformer(nn.Module):
             self.generator.weight = self.tgt_tok_emb.embedding.weight
 
         # Initialize parameters
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """
+        Standard Transformer initialization:
+        - Xavier Uniform for linear weights (robust default for NMT)
+        - Depth-aware Normal init for embeddings (1/sqrt(d_model))
+        - Zero for biases and padding indices
+        - Unit weight for LayerNorm/RMSNorm
+        """
+        if isinstance(module, nn.Linear):
+            # If weights are tied, the generator weight is just a pointer to embeddings.
+            # We skip re-initializing it here to preserve the embedding stats.
+            if not (self.config.tie_decoder_embeddings and module is self.generator):
+                nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            # Using 1/sqrt(d_model) ensures unit variance after the sqrt(d_model) scaling in forward.
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.d_model**-0.5)
+            if module.padding_idx is not None:
+                nn.init.zeros_(module.weight[module.padding_idx])
+        elif isinstance(module, (nn.LayerNorm, nn.RMSNorm)):
+            nn.init.ones_(module.weight)
+            if hasattr(module, "bias") and module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.MultiheadAttention):
+            # PyTorch's MultiheadAttention uses parameters directly
+            if module.in_proj_weight is not None:
+                nn.init.xavier_uniform_(module.in_proj_weight)
+            if module.in_proj_bias is not None:
+                nn.init.zeros_(module.in_proj_bias)
+            # out_proj is a sub-module handled by the Linear case above
 
     def encode(self, src, src_mask=None):
         """
@@ -534,7 +569,8 @@ class Seq2SeqTransformer(nn.Module):
         # Causal mask for decoder autogression
         tgt_len = tgt_input.size(1)
         tgt_mask = torch.triu(
-            torch.ones(tgt_len, tgt_len, device=src.device, dtype=torch.bool), diagonal=1
+            torch.ones(tgt_len, tgt_len, device=src.device, dtype=torch.bool),
+            diagonal=1,
         )
 
         # 2. Decode using native causal flag AND explicit mask to fix torch.compile compatibility

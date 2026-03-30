@@ -114,7 +114,7 @@ class TrainConfig:
 
     # Hardware & Performance
     device: str = "cuda"  # "cuda", "cpu", or "auto"
-    precision: str = "bf16"  # "bf16", "fp32"
+    precision: str = "bf16"  # "bf16", "fp16", "fp32"
     tf32: bool = True
 
     # Logging & Validation

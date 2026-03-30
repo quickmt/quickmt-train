@@ -8,6 +8,12 @@ import sacrebleu
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import GradScaler
+
+try:
+    import torch._inductor.config as inductor_config
+except ImportError:
+    inductor_config = None
 
 try:
     from aim import Run
@@ -229,9 +235,9 @@ def _train_impl(
 
     model = Seq2SeqTransformer(model_cfg).to(device)
 
-    # Convert model to precision for reduced memory footprint
-    if device.type == "cuda" and train_cfg.precision in ("bf16", "bfloat16"):
-        model = model.to(dtype=torch.bfloat16)
+    # Point: model weights remain in FP32 (master weights) for Mixed Precision Training.
+    # Casting the model to bf16 (model.to(dtype=torch.bfloat16)) is removed to ensure
+    # better convergence and stability of optimizer states (moment statistics).
 
     # Checkpoint loading (weights)
     load_model_weights(model, train_cfg, device, get_time_info)
@@ -250,7 +256,19 @@ def _train_impl(
                 f"{get_time_info()} Attempting to enable torch.compile for single-GPU training"
             )
         try:
+            # When using torch.compile, we can use Inductor's native recomputation
+            # which is more efficient and avoids conflicts with manual checkpoint().
+            if model_cfg.use_checkpoint and inductor_config is not None:
+                inductor_config.recompute_all = True
+                # Disable manual checkpointing because we use Inductor native instead
+                model.config.use_checkpoint = False
+
             model = torch.compile(model, dynamic=True)
+
+            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
+                print(
+                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
+                )
         except Exception as e:
             print(f"{get_time_info()} Failed to enable torch.compile: {e}")
             print(f"{get_time_info()} Falling back to non-compiled mode")
@@ -277,10 +295,34 @@ def _train_impl(
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
 
+    # Separate parameters into two groups: those that will receive weight decay and those that will not.
+    # Modern Transformer training (BERT, GPT-2, etc.) excludes biases and normalization/embedding
+    # parameters from weight decay to improve stability and avoid underfitting.
+
+    # We want to decay: Weight of Linear layers (2D+)
+    # We do NOT want to decay: Bias of anything, Weight of Norm/Embedding layers
+    decay_params = []
+    no_decay_params = []
+
+    for pn, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        # Biases and 1D parameters (like norm scales) are excluded from weight decay.
+        # This includes .bias, in_proj_bias, etc.
+        if pn.endswith("bias") or p.ndim == 1:
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+
+    optim_groups = [
+        {"params": decay_params, "weight_decay": train_cfg.weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
+    ]
+
     optimizer = optim.AdamW(
-        model.parameters(),
+        optim_groups,
         lr=train_cfg.lr,
-        weight_decay=train_cfg.weight_decay,
         eps=train_cfg.adam_eps,
         betas=(train_cfg.adam_beta1, train_cfg.adam_beta2),
         fused=True if device.type == "cuda" else False,
@@ -329,9 +371,17 @@ def _train_impl(
     # Loop
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    autocast_dtype = (
-        torch.bfloat16 if train_cfg.precision in ("bf16", "bfloat16") else torch.float32
-    )
+    # Mixed Precision Setup
+    autocast_dtype = torch.float32
+    use_scaler = False
+    if device.type == "cuda":
+        if train_cfg.precision in ("bf16", "bfloat16"):
+            autocast_dtype = torch.bfloat16
+        elif train_cfg.precision in ("fp16", "float16"):
+            autocast_dtype = torch.float16
+            use_scaler = True
+
+    scaler = GradScaler(enabled=use_scaler)
 
     start_time = time.time()
     total_loss_sum = 0
@@ -375,7 +425,7 @@ def _train_impl(
             context = nullcontext()
 
         with context:
-            loss.backward()
+            scaler.scale(loss).backward()
 
         accum_loss += loss.item()
         accum_tokens += num_tokens.item()
@@ -388,6 +438,7 @@ def _train_impl(
         batch_tgt_tokens += (tgt != model_cfg.pad_id).sum().item()
 
         if (batch_idx + 1) % train_cfg.accum_steps == 0:
+            # Scale and clip
             # Scale gradients by total number of tokens in the accumulation bucket
             # For DDP, we must synchronize the token count across all processes to avoid weight divergence.
             if world_size > 1:
@@ -399,18 +450,26 @@ def _train_impl(
             else:
                 global_accum_tokens = float(accum_tokens)
 
-            # Scale and clip
+            # Important: unscale before clipping or manual gradient manipulation
+            scaler.unscale_(optimizer)
+
             for p in model.parameters():
                 if p.grad is not None:
                     # DDP averages gradients across ranks, so we multiply by world_size
                     # before dividing by global token count to get the true token-level average.
                     p.grad.data.mul_(world_size).div_(max(1.0, global_accum_tokens))
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
-            last_grad_norm = grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), train_cfg.grad_clip
+            )
+            last_grad_norm = (
+                grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+            )
             if last_grad_norm > train_cfg.grad_clip:
                 clipping_count += 1
-            optimizer.step()
+
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
@@ -616,9 +675,12 @@ def validate(
     sample_count = 0
 
     # Use inference_mode instead of no_grad for better performance
-    autocast_dtype = (
-        torch.bfloat16 if train_cfg.precision in ("bf16", "bfloat16") else torch.float32
-    )
+    autocast_dtype = torch.float32
+    if device.type == "cuda":
+        if train_cfg.precision in ("bf16", "bfloat16"):
+            autocast_dtype = torch.bfloat16
+        elif train_cfg.precision in ("fp16", "float16"):
+            autocast_dtype = torch.float16
 
     with torch.inference_mode():
         for batch_idx, (src, tgt) in enumerate(loader):
