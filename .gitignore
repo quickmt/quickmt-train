@@ -225,3 +225,10 @@ model_avg_int8.pt
 averaged*
 *.db
 faen-*
+.aim/
+.virtual_documents/
+ct2-*
+eole-config*
+*eole-model
+tensorboard/
+

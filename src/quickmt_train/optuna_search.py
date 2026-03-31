@@ -27,7 +27,7 @@ def objective(trial, args):
     train_cfg.aim_repo = None
 
     # Do not enable compilation during hyperparameter search (can be slow/flaky across trials)
-    # train_cfg.enable_torch_compile = False
+    train_cfg.enable_torch_compile = False
 
     # Suggest hyperparameters
     train_cfg.lr = trial.suggest_float("lr", *args.lr_range, log=True)
@@ -45,6 +45,11 @@ def objective(trial, args):
         "layernorm_eps", *args.layernorm_eps_range, log=True
     )
     model_cfg.ff_bias = trial.suggest_categorical("ff_bias", args.ff_biases)
+
+    # Suggest corpus weights if requested
+    if args.tune_corpus_weights:
+        for i, corpus in enumerate(data_cfg.corpora):
+            corpus.weight = trial.suggest_int(f"corpus_{i + 1}_weight", 0, 10)
 
     from quickmt_train.train import train
 
@@ -95,7 +100,7 @@ def search_cli(
     metric: str = "loss",
     max_steps: int = 1000,
     eval_steps: int = 200,
-    n_trials: int = 100,
+    n_trials: int = 200,
     study_name: str = None,
     db: str = None,
     lr_range: tuple[float, float] = (1e-5, 5e-3),
@@ -107,6 +112,7 @@ def search_cli(
     activations: tuple[str, ...] = ("gelu", "relu", "silu"),
     layernorm_eps_range: tuple[float, float] = (1e-6, 1e-4),
     ff_biases: tuple[bool, ...] = (True, False),
+    tune_corpus_weights: bool = True,
 ):
     """
     Optuna Hyperparameter Optimization for quickmt-train.
@@ -128,6 +134,7 @@ def search_cli(
         activations: Possible values for activation function
         layernorm_eps_range: Range for layernorm epsilon (min, max)
         ff_biases: Possible values for feed-forward bias
+        tune_corpus_weights: Whether to tune the weight of each corpus in the config
     """
 
     # Create a simple args object to match the expected interface in objective()
@@ -151,6 +158,7 @@ def search_cli(
     args.activations = activations
     args.layernorm_eps_range = layernorm_eps_range
     args.ff_biases = ff_biases
+    args.tune_corpus_weights = tune_corpus_weights
 
     # Load config to resolve default db path
     _, _, train_cfg, _ = load_config(args.config)
