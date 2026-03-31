@@ -132,7 +132,7 @@ def load_model_weights(model, train_cfg, device, get_time_info):
         model.load_state_dict(state_dict, strict=False)
 
 
-def train(model_cfg=None, data_cfg=None, train_cfg=None):
+def train(model_cfg=None, data_cfg=None, train_cfg=None, on_eval_step=None):
     training_start = time.time()
 
     def get_time_info():
@@ -153,7 +153,7 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
     is_main = rank == 0
 
     try:
-        _train_impl(
+        return _train_impl(
             model_cfg,
             data_cfg,
             train_cfg,
@@ -162,6 +162,7 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
             world_size,
             is_main,
             get_time_info,
+            on_eval_step=on_eval_step,
         )
     finally:
         if world_size > 1:
@@ -169,7 +170,7 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None):
 
 
 def _train_impl(
-    model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info
+    model_cfg, data_cfg, train_cfg, rank, local_rank, world_size, is_main, get_time_info, on_eval_step=None
 ):
 
     if train_cfg.device == "auto":
@@ -396,6 +397,7 @@ def _train_impl(
     last_batch_loss = 0.0
     last_grad_norm = 0.0
     clipping_count = 0  # Count of clipping events since last log
+    latest_val_metrics = None
 
     for batch_idx, (src, tgt) in enumerate(train_loader):
         # Use non_blocking for async data transfer
@@ -494,6 +496,7 @@ def _train_impl(
                     model_cfg,
                     get_time_info,
                 )
+                latest_val_metrics = val_metrics
                 if is_main:
                     if run:
                         for k, v in val_metrics.items():
@@ -503,15 +506,18 @@ def _train_impl(
                                 step=global_step,
                                 context={"subset": "dev"},
                             )
-                    save_checkpoint(
-                        global_step,
-                        model,
-                        optimizer,
-                        scheduler,
-                        train_cfg,
-                        get_time_info,
-                        val_metrics=val_metrics,
-                    )
+                    if getattr(train_cfg, "save_checkpoints", True):
+                        save_checkpoint(
+                            global_step,
+                            model,
+                            optimizer,
+                            scheduler,
+                            train_cfg,
+                            get_time_info,
+                            val_metrics=val_metrics,
+                        )
+                if on_eval_step is not None:
+                    on_eval_step(val_metrics, global_step)
 
             # Progress Print (Rank 0 only)
             if is_main and global_step % train_cfg.log_steps == 0:
@@ -572,6 +578,43 @@ def _train_impl(
             train_cfg,
             get_time_info,
         )
+
+        if global_step % train_cfg.eval_steps != 0:
+            val_metrics = validate(
+                model,
+                dev_loader,
+                src_sp,
+                tgt_sp,
+                device,
+                train_cfg,
+                data_cfg,
+                model_cfg,
+                get_time_info,
+            )
+            latest_val_metrics = val_metrics
+            if is_main:
+                if run:
+                    for k, v in val_metrics.items():
+                        run.track(
+                            v,
+                            name=f"val_{k}",
+                            step=global_step,
+                            context={"subset": "dev"},
+                        )
+                if getattr(train_cfg, "save_checkpoints", True):
+                    save_checkpoint(
+                        global_step,
+                        model,
+                        optimizer,
+                        scheduler,
+                        train_cfg,
+                        get_time_info,
+                        val_metrics=val_metrics,
+                    )
+            if on_eval_step is not None:
+                on_eval_step(val_metrics, global_step)
+
+    return latest_val_metrics
 
 
 def save_checkpoint(
@@ -756,7 +799,7 @@ def validate(
     print(
         f"\n{get_time_info()} [Validation] Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | Acc: {acc:.4f} | BLEU: {bleu:.2f} | ChrF: {chrf:.2f}"
     )
-    for i in range(min(10, len(hypotheses))):
+    for i in range(min(train_cfg.quick_test_samples, len(hypotheses))):
         print(f"Sample {i}:")
         print(f"  Ref: {references[i]}")
         print(f"  Hyp: {hypotheses[i]}")

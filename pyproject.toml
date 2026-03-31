@@ -8,13 +8,12 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.7.0,<2.8.0",
+    "torch>=2.7.0",
     "fire",
     "scipy",
     "numpy",
     "safetensors",
     "pyyaml",
-    "optuna",
     "nltk",
     "sacremoses",
     "datasets",
@@ -33,6 +32,10 @@ docs = [
 track = [
     "aim"
 ]
+optimize = [
+    "optuna",
+    "optuna-dashboard",
+]
 
 [project.urls]
 Homepage = "https://github.com/quickmt"
@@ -44,7 +47,7 @@ quickmt-flores-download = "quickmt_train.flores_to_files:main"
 quickmt-avg = "quickmt_train.average_checkpoints:main"
 quickmt-export = "quickmt_train.convert_to_ct2:main"
 quickmt-eval = "quickmt_train.evaluate:main"
-quickmt-optimize = "quickmt_train.optimize_train:main"
+quickmt-optimize = "quickmt_train.optuna_search:main"
 quickmt-clean-embeddings = "quickmt_train.filter_static_embeddings:main"
 quickmt-clean-primary = "quickmt_train.filter_basic:main"
 quickmt-dataset-to-files = "quickmt_train.dataset_to_files:main"

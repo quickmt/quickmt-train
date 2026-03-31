@@ -109,8 +109,9 @@ class TrainConfig:
     # Training Loop
     accum_steps: int = 30
     grad_clip: float = 1.0
-    eval_steps: int = 2500
-    max_checkpoints: int = 4
+    eval_steps: int = 1000
+    max_checkpoints: int = 5
+    save_checkpoints: bool = True
 
     # Hardware & Performance
     device: str = "cuda"  # "cuda", "cpu", or "auto"
