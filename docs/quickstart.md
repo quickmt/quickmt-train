@@ -62,7 +62,7 @@ Now we will need to create a configuration file. Copy the following into a file 
 ```yaml
 train:
   experiment_name: "isen-tiny-1"
-  lr: 2.0e-3
+  lr: 1.0e-3
   accum_steps: 6
   warmup_steps: 5000
   max_steps: 20000
@@ -171,14 +171,6 @@ quickmt-avg --experiment_dir ./isen-tiny-1 --k 1
 
 # Convert to CTranslate2 format
 quickmt-export --experiment_dir ./isen-tiny-1
-
-# Download Flores Data
-# NOTE: You will need to log in to Huggingface
-# And accept the flores-plus terms of use: https://huggingface.co/datasets/openlanguagedata/flores_plus
-quickmt-flores-download isl_Latn eng_Latn
-
-# Evaluate (uses quickmt library, https://github.com/quickmt/quickmt)
-quickmt-eval --src_file flores_plus_isl_Latn.txt --ref_file flores_plus_eng_Latn.txt --device cuda --batch_size 32 --beam_size 5 --model ./isen-tiny-1/exported_model
 ```
 
 ## 5 - Model Evaluation
