@@ -15,12 +15,12 @@ class ModelConfig:
     dropout: float = 0.1
     vocab_size_src: int = 32000
     vocab_size_tgt: int = 32000
-    activation: str = "gelu"
     use_checkpoint: bool = False
-    ff_bias: bool = False
-    mlp_type: str = "standard"  # "standard" or "gated"
+    ff_bias: bool = True
     layernorm_eps: float = 1e-6
-    norm_type: str = "rmsnorm"  # "layernorm" or "rmsnorm"
+    activation: str = "gelu"
+    mlp_type: str = "standard"  # "standard" or "gated"
+    norm_type: str = "layernorm"  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
 
     # Special Tokens

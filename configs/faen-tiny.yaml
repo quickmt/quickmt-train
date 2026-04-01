@@ -13,6 +13,7 @@ model:
   ff_bias: true  
   tie_decoder_embeddings: false
   layernorm_eps: 1.0e-5
+  dropout: 0.05
 
 data:
   src_lang: "fa"
