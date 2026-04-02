@@ -113,31 +113,73 @@ After quite a while (largely a function of your download speed) this will create
 
 As well as a folder "tests" containing the test set files, and a folder "train-parts" containing the individual training corpora. **Note:** `mtdata` will also cache corpus downloads in a seperate directory, "~/.mtdata" by default. Keep an eye on your disk space and periodically clean this directory to free up space.
 
+## 1.1 - Look For Other Datasets
+
+The more clean data you can find the better, so take a [look around](https://huggingface.co/datasets?task_categories=task_categories:translation&language=language:uk,language:en&sort=trending) for other sources of translation training data.
+
+Some possibilities:
+
+* https://huggingface.co/datasets/ayymen/Weblate-Translations
+* https://huggingface.co/datasets/HuggingFaceFW/finetranslations
+
+
 ## 2 - Basic Filter
 
 Next we will use a basic filter to clean up the data. 
 
-```
-quickmt-clean-primary ...
+This will do several things reasonably efficiently for large corpora using multiple cores:
+
+* Deduplication
+* Length ratio filtering
+* Language ID filtering
+* Sentence length filtering
+* Custom rules-based filtering
+* Shuffle the data
+
+Note that it assumes `gnu parallel` is installed.
+
+```bash
+# Download language identification model
+wget https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
+
+# Setting src_min_langid_score to 0 in case Language ID confuses different Cyrillic languages
+paste -d '\t' train.ukr train.eng \
+    | sort | uniq  \
+    | parallel --block 70M -j 4 --pipe -k -l 200000 quickmt-clean-primary --src_lang uk --tgt_lang en --length_ratio 3 --src_min_langid_score 0 --tgt_min_langid_score 0.5 --ft_model_path="lid.176.bin" \
+    | awk 'BEGIN{srand()}{print rand(), $0}' | sort -n -k 1 | awk 'sub(/\S* /,"\t")' \
+    | awk -v FS="\t" '{ print $2 > "train.cleaned.ukr" ; print $3 > "train.cleaned.eng" }'
 ```
 
 ## 3 - Semantic Filter
 
 Next we will use sentence transformer static embedding model to filter out semantically dissimilar sentences. 
 
-```
-quickmt-clean-embeddings ...
+```bash
+quickmt-clean-embeddings \
+    --src_input train.cleaned.ukr \
+    --src_output train.cleaned.filtered.ukr \
+    --tgt_input train.cleaned.eng \
+    --tgt_output train.cleaned.filtered.eng \
+    --src_dev dev.ukr \
+    --tgt_dev dev.eng \
+    --src_bad_output filtered.bad.ukr \
+    --tgt_bad_output filtered.bad.eng \
+    --sim_cutoff_quantile 0.01
 ```
 
-## 4 - Upload to HuggingFace Hub
+## 5 - Upload Cleaned Data to HuggingFace Hub
 
-```
-quickmt-dataset-upload ...
-```
+Once you have downloaded and cleaned up your data, upload it to the Huggingface Hub to make it available for others to use and share.
 
-## 5 - Train
+```bash
+# Make sure you are logged in
+hf auth login
 
-```
-quickmt-train ...
+quickmt-dataset-upload \
+    quickmt/quickmt-train.uk-en \
+    --src_in train.cleaned.filtered.ukr  \
+    --tgt_in train.cleaned.filtered.eng  \
+    --src_lang uk \
+    --tgt_lang en
 ```
 
