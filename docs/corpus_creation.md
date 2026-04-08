@@ -122,6 +122,18 @@ Some possibilities:
 * https://huggingface.co/datasets/ayymen/Weblate-Translations
 * https://huggingface.co/datasets/HuggingFaceFW/finetranslations
 
+We have a helper script to download a sample of `finetranslations`. To download and sentence split a sample of `finetranslations` for Ukranian-English:
+
+```bash
+quickmt-finetranslations-download ukr_Cyrl
+```
+
+This will create two files:
+
+* finetranslations.ukr_Cyrl-eng_Latn.ukr_Cyrl
+* finetranslations.ukr_Cyrl-eng_Latn.eng_Latn
+
+Note: `finetranslations` contains text translated from foreign languages *into* English. This is likely better for training translation models *from* English into the foreign language (back-translated data), but may also work for the opposite translation direction - this is essentially sequence level knowledge distillation from the Gemma 3 27b model. 
 
 ## 2 - Basic Filter
 
@@ -167,7 +179,7 @@ quickmt-clean-embeddings \
     --sim_cutoff_quantile 0.01
 ```
 
-## 5 - Upload Cleaned Data to HuggingFace Hub
+## 4 - Upload Cleaned Data to HuggingFace Hub
 
 Once you have downloaded and cleaned up your data, upload it to the Huggingface Hub to make it available for others to use and share.
 
