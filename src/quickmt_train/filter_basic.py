@@ -199,23 +199,21 @@ def clean(
         src_in = fields[-2].strip()
         tgt_in = fields[-1].strip()
 
-        try:
-            cleaned_input = clean_input(
-                src_in,
-                tgt_in,
-                src_lang,
-                tgt_lang,
-                ft,
-                src_min_langid_score,
-                tgt_min_langid_score,
-                length_ratio,
-                min_char_length,
-                max_char_length,
-            )
-            if cleaned_input:
-                sys.stdout.write(cleaned_input)
-        except:
-            pass
+        cleaned_input = clean_input(
+            src_in,
+            tgt_in,
+            src_lang,
+            tgt_lang,
+            ft,
+            src_min_langid_score,
+            tgt_min_langid_score,
+            length_ratio,
+            min_char_length,
+            max_char_length,
+        )
+        if cleaned_input:
+            sys.stdout.write(cleaned_input)
+
 
 
 def main():

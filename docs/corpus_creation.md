@@ -145,7 +145,7 @@ wget https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
 # Setting src_min_langid_score to 0 in case Language ID confuses different Cyrillic languages
 paste -d '\t' train.ukr train.eng \
     | sort | uniq  \
-    | parallel --block 70M -j 4 --pipe -k -l 200000 quickmt-clean-primary --src_lang uk --tgt_lang en --length_ratio 3 --src_min_langid_score 0 --tgt_min_langid_score 0.5 --ft_model_path="lid.176.bin" \
+    | parallel --block 70M -j 4 --pipe -k -l 200000 quickmt-clean-primary uk en --length_ratio 3 --src_min_langid_score 0 --tgt_min_langid_score 0.5 --ft_model_path="lid.176.bin" \
     | awk 'BEGIN{srand()}{print rand(), $0}' | sort -n -k 1 | awk 'sub(/\S* /,"\t")' \
     | awk -v FS="\t" '{ print $2 > "train.cleaned.ukr" ; print $3 > "train.cleaned.eng" }'
 ```

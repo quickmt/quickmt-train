@@ -19,7 +19,7 @@ dependencies = [
     "datasets",
     "sacrebleu",
     "sentence-transformers",
-    "fasttext",
+    "fasttext-numpy2",
     "quickmt @ git+https://github.com/quickmt/quickmt.git"
 ]
 
@@ -52,6 +52,7 @@ quickmt-clean-embeddings = "quickmt_train.filter_static_embeddings:main"
 quickmt-clean-primary = "quickmt_train.filter_basic:main"
 quickmt-dataset-to-files = "quickmt_train.dataset_to_files:main"
 quickmt-dataset-upload = "quickmt_train.corpus_to_hf:main"
+quickmt-finetranslations-download = "quickmt_train.finetranslations_to_files:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
