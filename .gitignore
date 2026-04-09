@@ -234,3 +234,6 @@ tensorboard/
 lid.176.bin
 .kilo/
 is-en-1/
+flores_plus*
+*-base/
+

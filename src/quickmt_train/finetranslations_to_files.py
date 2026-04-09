@@ -45,7 +45,7 @@ def convert(
 
     if tgt_output_file.exists():
         raise FileExistsError(
-            f"Target file {tgt_output_file} exists - will not line_counter = 0"
+            f"Target file {tgt_output_file} exists - will not remove"
         )
 
     line_counter = 0
@@ -79,10 +79,10 @@ def convert(
                                 srcfile.write(i + "\n")
                                 tgtfile.write(j + "\n")
                                 if line_counter >= line_limit:
-                                    print("Lint limit reached, exiting...")
-                                    exit(0)
+                                    print("Line limit reached, exiting...")
+                                    return
 
-    print("Done!")
+    print("Line limit not reached, done!")
 
 
 def main():
