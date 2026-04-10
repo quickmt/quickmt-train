@@ -174,8 +174,6 @@ def convert_vocab(sp_vocab_path):
     return tokens
 
 
-
-
 def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     """
     Convert a trained model to CTranslate2 format.
@@ -199,8 +197,17 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
             print(f"Warning: Configuration key '{key}' not found in any config object.")
 
     model_file = os.path.join(experiment_dir, "averaged_model.safetensors")
+
+    # If no averaged model, try to find the best checkpoint
     if not os.path.exists(model_file):
-        raise FileNotFoundError(f"Model file not found at {model_file}")
+        checkpoints = sorted(
+            Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")
+        )
+        if checkpoints:
+            model_file = str(checkpoints[-1])
+            print(f"Using checkpoint: {model_file}")
+        else:
+            raise FileNotFoundError(f"No model files found in {experiment_dir}")
 
     state_dict = load_file(model_file, device="cpu")
 

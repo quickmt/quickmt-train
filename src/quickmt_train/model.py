@@ -774,31 +774,4 @@ class Seq2SeqTransformer(nn.Module):
         # Return best beam
         return inputs[:, 0, 1:]  # Skip BOS
 
-    def convert_to_int8(self):
-        """
-        Convert the model to a quantized INT8 model using static quantization (PTQ).
-        Should be called after calibration with calibrate().
-        """
-        self.eval()
-        torch.ao.quantization.convert(self, inplace=True)
-        print("Model converted to INT8")
 
-    def calibrate(self, loader, num_batches=10):
-        """
-        Update quantization observers by running sample data through the model.
-        Useful for Post-Training Quantization (PTQ) after training or weight averaging.
-
-        Args:
-            loader (DataLoader): Data loader providing (src, tgt) pairs.
-            num_batches (int): Number of batches to use for calibration. Defaults to 10.
-        """
-        device = next(self.parameters()).device
-        self.eval()
-        # Ensure observers are enabled and Dropout is disabled
-        with torch.no_grad():
-            for i, (src, tgt) in enumerate(loader):
-                if i >= num_batches:
-                    break
-                # Run forward pass (updates observers)
-                self.forward(src.to(device), tgt.to(device))
-        print(f"Calibration completed on {num_batches} batches")

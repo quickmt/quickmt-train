@@ -143,10 +143,7 @@ class ExportConfig:
     k: int = 5
 
     # Quantization
-    export_int8: bool = False
-    calib_batches: int = 200
     quantization: str = "int8"
-    qconfig_backend: str = "fbgemm"  # "fbgemm" or "qnnpack"
 
     # Inference Defaults
     beam_size: int = 5
