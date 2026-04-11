@@ -339,9 +339,13 @@ class Seq2SeqTransformer(nn.Module):
         self.src_tok_emb = TokenEmbedding(
             config.vocab_size_src, config.d_model, padding_idx=config.pad_id
         )
-        self.tgt_tok_emb = TokenEmbedding(
-            config.vocab_size_tgt, config.d_model, padding_idx=config.pad_id
-        )
+        if config.joint_vocab:
+            # Share the same embedding for src and tgt
+            self.tgt_tok_emb = self.src_tok_emb
+        else:
+            self.tgt_tok_emb = TokenEmbedding(
+                config.vocab_size_tgt, config.d_model, padding_idx=config.pad_id
+            )
         self.positional_encoding = PositionalEncoding(
             config.d_model, dropout=config.dropout, max_len=config.max_len
         )
@@ -386,7 +390,10 @@ class Seq2SeqTransformer(nn.Module):
 
         # Always use bias for the generator
         self.generator = nn.Linear(config.d_model, config.vocab_size_tgt, bias=True)
-        if config.tie_decoder_embeddings:
+        if config.joint_vocab:
+            # With joint vocab, tie generator to the shared embedding
+            self.generator.weight = self.src_tok_emb.embedding.weight
+        elif config.tie_decoder_embeddings:
             self.generator.weight = self.tgt_tok_emb.embedding.weight
 
         # Initialize parameters
@@ -401,9 +408,11 @@ class Seq2SeqTransformer(nn.Module):
         - Unit weight for LayerNorm/RMSNorm
         """
         if isinstance(module, nn.Linear):
-            # If weights are tied, the generator weight is just a pointer to embeddings.
+            # If weights are tied (joint_vocab or tie_decoder_embeddings),
+            # the generator weight is just a pointer to embeddings.
             # We skip re-initializing it here to preserve the embedding stats.
-            if not (self.config.tie_decoder_embeddings and module is self.generator):
+            tied = self.config.joint_vocab or self.config.tie_decoder_embeddings
+            if not (tied and module is self.generator):
                 nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
@@ -561,23 +570,13 @@ class Seq2SeqTransformer(nn.Module):
 
         tgt_padding_mask = (tgt_input == self.config.pad_id).to(torch.bool)
 
-        # Causal mask for decoder autogression
-        # Create causal mask for training
         # 1. Encode
         memory = self.encode(src)
 
-        # Causal mask for decoder autogression
-        tgt_len = tgt_input.size(1)
-        tgt_mask = torch.triu(
-            torch.ones(tgt_len, tgt_len, device=src.device, dtype=torch.bool),
-            diagonal=1,
-        )
-
-        # 2. Decode using native causal flag AND explicit mask to fix torch.compile compatibility
+        # 2. Decode using native causal flag (no explicit mask needed)
         outs = self.decode(
             tgt_input,
             memory,
-            tgt_mask=tgt_mask,
             tgt_is_causal=True,
             tgt_key_padding_mask=tgt_padding_mask,
             memory_key_padding_mask=src_padding_mask,
@@ -624,7 +623,7 @@ class Seq2SeqTransformer(nn.Module):
             enc_output (torch.Tensor, optional): Pre-computed encoder output.
 
         Returns:
-            torch.Tensor: Generated token IDs.
+            torch.Tensor: Generated token IDs (without BOS).
         """
         max_len = max_len or self.config.max_len
         bos_id = bos_id if bos_id is not None else self.config.bos_id
@@ -646,14 +645,12 @@ class Seq2SeqTransformer(nn.Module):
 
         for i in range(max_len):
             sz = ys.size(1)
-            tgt_mask = torch.triu(
-                torch.ones(sz, sz, device=device, dtype=torch.bool), diagonal=1
-            )
+            # Use proper causal mask instead of torch.triu
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(sz).to(device)
             out = self.decode(
                 ys,
                 memory,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
 
@@ -661,23 +658,27 @@ class Seq2SeqTransformer(nn.Module):
             prob = self.project(out[:, -1])
             _, next_word = torch.max(prob, dim=1)
 
-            # Update sequences
+            # Update sequences - keep finished sequences unchanged
             next_word = next_word.clone()
-            next_word[finished] = pad_id
+            if finished.any():
+                # Keep the last token of finished sequences as pad
+                next_word[finished] = ys[finished, -1]
             ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)
 
-            # Track finished
+            # Track finished sequences
             finished = finished | (next_word == eos_id)
 
             if finished.all():
                 break
 
+        # Remove BOS token from output
         return ys[:, 1:]
 
     @torch.no_grad()
-    def beam_search(self, src, max_len=None, beam_size=5, bos_id=None, eos_id=None):
+    def beam_search(self, src, max_len=None, beam_size=5, bos_id=None, eos_id=None,
+                    length_penalty_alpha=1.0, length_penalty_beta=0.0):
         """
-        Beam search decoding for generation.
+        Beam search decoding for generation with length normalization.
 
         Args:
             src (torch.Tensor): Source sequences.
@@ -685,6 +686,8 @@ class Seq2SeqTransformer(nn.Module):
             beam_size (int): Number of beams. Defaults to 5.
             bos_id (int, optional): Beginning-of-sentence token ID.
             eos_id (int, optional): End-of-sentence token ID.
+            length_penalty_alpha: Length normalization alpha. Defaults to 1.0.
+            length_penalty_beta: Length normalization beta. Defaults to 0.0.
 
         Returns:
             torch.Tensor: Best sequence of token IDs for each input sequence.
@@ -694,85 +697,130 @@ class Seq2SeqTransformer(nn.Module):
         eos_id = eos_id if eos_id is not None else self.config.eos_id
         pad_id = self.config.pad_id
 
-        # src: (bs, seq_len)
         bs = src.size(0)
         device = src.device
 
         # Encode once
+        src_padding_mask = (src == pad_id).to(torch.bool)
         memory = self.encode(src)
 
-        src_padding_mask = (src == pad_id).to(torch.bool)
-
-        # Tile memory and mask
+        # Tile memory and mask for beam
         memory = memory.repeat_interleave(beam_size, dim=0)
         src_padding_mask = src_padding_mask.repeat_interleave(beam_size, dim=0)
 
-        # Initialize
+        # Initialize: beam 0 gets BOS, others get dummy scores
         scores = torch.zeros(bs, beam_size, device=device)
         scores[:, 1:] = -1e9
+
+        # Track which beams have finished
+        # (batch, beam) -> whether beam finished
+        finished_beams = torch.zeros(bs, beam_size, dtype=torch.bool, device=device)
+        # (batch, beam) -> length of each beam
+        beam_lengths = torch.ones(bs, beam_size, device=device)
 
         # inputs: (bs, beam_size, seq_len)
         inputs = torch.full((bs, beam_size, 1), bos_id, dtype=torch.long, device=device)
 
         vocab_size = self.config.vocab_size_tgt
 
-        for i in range(max_len):
+        for step in range(max_len):
             curr_seq_len = inputs.size(2)
             flat_inputs = inputs.view(bs * beam_size, curr_seq_len)
-            tgt_mask = torch.triu(
-                torch.ones(curr_seq_len, curr_seq_len, device=device, dtype=torch.bool),
-                diagonal=1,
-            )
+            # Use proper causal mask
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(curr_seq_len).to(device)
 
             # Decode
             out = self.decode(
                 flat_inputs,
                 memory,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
 
             # Logits for last token
             logits = self.project(out[:, -1])
             log_probs = torch.log_softmax(logits, dim=-1)
+            # Mask out EOS for already-finished beams to prevent re-selection
+            log_probs = log_probs.view(bs, beam_size, vocab_size)
+            log_probs[finished_beams] = 0.0
+            log_probs[finished_beams, :, eos_id] = -1e9
+            log_probs = log_probs.view(bs * beam_size, vocab_size)
 
             # Reshape back to (bs, beam, vocab)
             log_probs = log_probs.view(bs, beam_size, vocab_size)
 
-            # Add to previous scores
-            total_scores = scores.unsqueeze(-1) + log_probs
+            # Apply length normalization to scores
+            current_length = beam_lengths  # (bs, beam)
+            length_penalty = ((length_penalty_beta + current_length) ** length_penalty_alpha) / (
+                (length_penalty_beta + 1.0) ** length_penalty_alpha
+            )
+            normalized_scores = scores / length_penalty.clamp(min=1e-6)
 
-            # Flatten to find top-k across all (beam * vocab) options
+            # Add to previous scores
+            total_scores = normalized_scores.unsqueeze(-1) + log_probs
+
+            # Flatten to find top-k
             total_scores_flat = total_scores.view(bs, -1)
 
             # Get top k
-            top_acc_scores, top_indices = total_scores_flat.topk(beam_size, dim=-1)
+            top_scores, top_indices = total_scores_flat.topk(beam_size, dim=-1)
 
             # Convert indices back
             beam_indices = top_indices // vocab_size
             token_indices = top_indices % vocab_size
 
             # Update scores
-            scores = top_acc_scores
+            scores = top_scores
 
-            # Construct new inputs
-            new_inputs = []
+            # Construct new inputs and track finished beams
+            new_inputs_list = []
+            new_finished = []
+            new_lengths = []
+
             for b in range(bs):
                 prev_beams = inputs[b]
-                selected_beam_indices = beam_indices[b]
+                selected_beam_idx = beam_indices[b]
                 selected_tokens = token_indices[b]
 
-                selected_sequences = prev_beams[selected_beam_indices]
-                new_seq = torch.cat(
-                    [selected_sequences, selected_tokens.unsqueeze(-1)], dim=-1
-                )
-                new_inputs.append(new_seq)
+                selected_sequences = prev_beams[selected_beam_idx]
+                new_tokens = selected_tokens.unsqueeze(-1)
+                new_seq = torch.cat([selected_sequences, new_tokens], dim=-1)
 
-            inputs = torch.stack(new_inputs)
+                # Track finished beams
+                prev_finished = finished_beams[b, selected_beam_idx]
+                just_finished = (selected_tokens == eos_id) & (~prev_finished)
+                curr_finished = prev_finished | just_finished
 
-        # Return best beam
-        return inputs[:, 0, 1:]  # Skip BOS
+                # Update lengths
+                curr_lengths = beam_lengths[b, selected_beam_idx] + (~curr_finished).long()
+
+                new_inputs_list.append(new_seq)
+                new_finished.append(curr_finished)
+                new_lengths.append(curr_lengths)
+
+            inputs = torch.stack(new_inputs_list)
+            finished_beams = torch.stack(new_finished)
+            beam_lengths = torch.stack(new_lengths)
+
+            # Early exit: if all beams in all batches have finished
+            if finished_beams.all():
+                break
+
+        # Apply final length normalization and select best beam
+        final_length_penalty = ((length_penalty_beta + beam_lengths) ** length_penalty_alpha) / (
+            (length_penalty_beta + 1.0) ** length_penalty_alpha
+        )
+        final_scores = scores / final_length_penalty.clamp(min=1e-6)
+
+        # Select best beam for each batch
+        best_beam_idx = final_scores.argmax(dim=1)
+        best_beams = []
+        for b in range(bs):
+            beam = inputs[b, best_beam_idx[b].item()]
+            # Remove BOS token
+            best_beams.append(beam[1:])
+
+        return torch.stack(best_beams)
 
     def convert_to_int8(self):
         """

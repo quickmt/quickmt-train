@@ -116,11 +116,11 @@ class StreamingTextDataset(IterableDataset):
                                     print(
                                         f"[{timestamp}] Corpus stopped (reached stop_step): {self.corpora[i].src_file} (Stop step: {self.corpora[i].stop_step})"
                                     )
-                                # Close files
+                                # Close files using tracked handles
                                 try:
-                                    f_src, f_tgt = files_list[i]
-                                    f_src.close()
-                                    f_tgt.close()
+                                    corp_f_src, corp_f_tgt = files_list[i]
+                                    corp_f_src.close()
+                                    corp_f_tgt.close()
                                 except Exception:
                                     pass
 
@@ -421,6 +421,25 @@ def load_file_lines(path, limit=None):
     return lines
 
 
+def _create_joint_corpus_input(corpora, experiment_name):
+    """Create a temporary file with concatenated src + tgt text for joint tokenizer training."""
+    import tempfile
+
+    # Use first corpus files for tokenizer training
+    src_file = corpora[0].src_file
+    tgt_file = corpora[0].tgt_file
+
+    joint_file = os.path.join(experiment_name, "joint_corpus.tmp")
+    with open(joint_file, "w", encoding="utf-8") as out:
+        for fpath in [src_file, tgt_file]:
+            with open(fpath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        out.write(line + "\n")
+    return joint_file
+
+
 def PrepareData(
     model_cfg, data_cfg, train_cfg, global_step_value=None, rank=0, world_size=1
 ):
@@ -437,44 +456,72 @@ def PrepareData(
     if not data_cfg.corpora:
         raise ValueError("No corpora provided in data_cfg")
 
-    tokenizer_train_src = data_cfg.corpora[0].src_file
-    tokenizer_train_tgt = data_cfg.corpora[0].tgt_file
+    if model_cfg.joint_vocab:
+        # Train a single joint tokenizer from concatenated src + tgt text
+        joint_prefix = data_cfg.joint_tokenizer_prefix
+        if not os.path.exists(f"{joint_prefix}.model"):
+            print("Training Joint Tokenizer (src + tgt)...")
+            joint_input = _create_joint_corpus_input(
+                data_cfg.corpora, data_cfg.experiment_name
+            )
+            train_tokenizer(
+                joint_input,
+                joint_prefix,
+                vocab_size=vocab_size_src,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
+            if os.path.exists(joint_input):
+                os.remove(joint_input)
 
-    if not os.path.exists(f"{model_prefix_src}.model"):
-        print("Training Source Tokenizer...")
-        train_tokenizer(
-            tokenizer_train_src,
+        src_sp, tgt_sp = load_tokenizers(
+            joint_prefix,
+            joint_prefix,
+            expected_src_vocab_size=vocab_size_src,
+            expected_tgt_vocab_size=vocab_size_tgt,
+        )
+    else:
+        tokenizer_train_src = data_cfg.corpora[0].src_file
+        tokenizer_train_tgt = data_cfg.corpora[0].tgt_file
+
+        if not os.path.exists(f"{model_prefix_src}.model"):
+            print("Training Source Tokenizer...")
+            train_tokenizer(
+                tokenizer_train_src,
+                model_prefix_src,
+                vocab_size=vocab_size_src,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
+
+        if not os.path.exists(f"{model_prefix_tgt}.model"):
+            print("Training Target Tokenizer...")
+            train_tokenizer(
+                tokenizer_train_tgt,
+                model_prefix_tgt,
+                vocab_size=vocab_size_tgt,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
+
+        src_sp, tgt_sp = load_tokenizers(
             model_prefix_src,
-            vocab_size_src,
-            char_coverage=data_cfg.char_coverage,
-            input_sentence_size=data_cfg.input_sentence_size,
-            pad_id=model_cfg.pad_id,
-            unk_id=model_cfg.unk_id,
-            bos_id=model_cfg.bos_id,
-            eos_id=model_cfg.eos_id,
-        )
-
-    if not os.path.exists(f"{model_prefix_tgt}.model"):
-        print("Training Target Tokenizer...")
-        train_tokenizer(
-            tokenizer_train_tgt,
             model_prefix_tgt,
-            vocab_size_tgt,
-            char_coverage=data_cfg.char_coverage,
-            input_sentence_size=data_cfg.input_sentence_size,
-            pad_id=model_cfg.pad_id,
-            unk_id=model_cfg.unk_id,
-            bos_id=model_cfg.bos_id,
-            eos_id=model_cfg.eos_id,
+            expected_src_vocab_size=vocab_size_src,
+            expected_tgt_vocab_size=vocab_size_tgt,
         )
-
-    # 2. Load Tokenizers
-    src_sp, tgt_sp = load_tokenizers(
-        model_prefix_src,
-        model_prefix_tgt,
-        expected_src_vocab_size=vocab_size_src,
-        expected_tgt_vocab_size=vocab_size_tgt,
-    )
 
     # 3. Create Streaming Datasets
     print("Initializing Streaming Datasets...")

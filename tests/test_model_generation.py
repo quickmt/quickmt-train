@@ -5,14 +5,9 @@ Unit tests for Seq2SeqTransformer generate and beam_search methods.
 import torch
 import torch.nn as nn
 import pytest
-import sys
-import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from config import ModelConfig
-from model import Seq2SeqTransformer
+from quickmt_train.config import ModelConfig
+from quickmt_train.model import Seq2SeqTransformer
 
 
 class TestGenerateMethod:

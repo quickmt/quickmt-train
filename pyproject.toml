@@ -36,6 +36,10 @@ optimize = [
     "optuna",
     "optuna-dashboard",
 ]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
 
 [project.urls]
 Homepage = "https://github.com/quickmt"

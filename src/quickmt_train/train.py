@@ -39,7 +39,15 @@ def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
         raw_model = raw_model._orig_mod
 
     src_emb_params = sum(p.numel() for p in raw_model.src_tok_emb.parameters())
-    tgt_emb_params = sum(p.numel() for p in raw_model.tgt_tok_emb.parameters())
+    if model_cfg.joint_vocab:
+        # Shared embedding — report once
+        emb_label = "Joint embedding params"
+        emb_params = src_emb_params
+    else:
+        tgt_emb_params = sum(p.numel() for p in raw_model.tgt_tok_emb.parameters())
+        emb_label = None
+        emb_params = None
+
     enc_params = sum(p.numel() for p in raw_model.encoder.parameters())
     dec_params = sum(p.numel() for p in raw_model.decoder.parameters())
     total_params = sum(p.numel() for p in model.parameters())
@@ -47,8 +55,11 @@ def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
 
     print(f"{get_time_info()} Model parameters: {total_params:,}")
     print(f"{get_time_info()} Trainable parameters: {trainable_params:,}")
-    print(f"{get_time_info()} Source embedding params: {src_emb_params:,}")
-    print(f"{get_time_info()} Target embedding params: {tgt_emb_params:,}")
+    if model_cfg.joint_vocab:
+        print(f"{get_time_info()} {emb_label}: {emb_params:,}")
+    else:
+        print(f"{get_time_info()} Source embedding params: {src_emb_params:,}")
+        print(f"{get_time_info()} Target embedding params: {tgt_emb_params:,}")
     print(f"{get_time_info()} Encoder params: {enc_params:,}")
     print(f"{get_time_info()} Decoder params: {dec_params:,}")
 
@@ -754,22 +765,19 @@ def validate(
             mask_acc = tgt_labels != model_cfg.pad_id
             correct_tokens += ((preds == tgt_labels) & mask_acc).sum().item()
 
-            # Generation for BLEU/ChrF - only process if we still need samples
+            # Generation for BLEU/ChrF - use autoregressive generation for realistic metrics
             if sample_count < max_samples:
-                if use_autoregressive:
-                    # True autoregressive generation including encoding
-                    raw_model = model.module if hasattr(model, "module") else model
-                    enc = raw_model.encode(src)
-                    generated_ids = raw_model.generate(
-                        src,
-                        max_len=model_cfg.max_len,
-                        enc_output=enc,
-                        bos_id=model_cfg.bos_id,
-                        eos_id=model_cfg.eos_id,
-                    )
-                else:
-                    # Teacher-forced predictions (fastest, uses existing logits)
-                    generated_ids = preds
+                raw_model = model.module if hasattr(model, "module") else model
+                if hasattr(raw_model, "_orig_mod"):
+                    raw_model = raw_model._orig_mod
+
+                # Use greedy generation (fastest) for validation
+                generated_ids = raw_model.generate(
+                    src,
+                    max_len=model_cfg.max_len,
+                    bos_id=model_cfg.bos_id,
+                    eos_id=model_cfg.eos_id,
+                )
 
                 for i in range(src.size(0)):
                     if sample_count >= max_samples:
