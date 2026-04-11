@@ -408,7 +408,7 @@ def _train_impl(
         )
 
         with torch.autocast(device_type=device.type, dtype=autocast_dtype):
-            if train_cfg.rdrop_alpha > 0.0:
+            if train_cfg.rdrop_alpha > 0.0 and global_step >= getattr(train_cfg, 'rdrop_warmup_steps', 0):
                 loss1, (logits1, num_tokens) = model(
                     src, tgt, return_outputs=True, label_smoothing=train_cfg.label_smoothing
                 )
