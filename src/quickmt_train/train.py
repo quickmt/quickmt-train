@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import sacrebleu
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.cuda.amp import GradScaler
 
@@ -407,9 +408,34 @@ def _train_impl(
         )
 
         with torch.autocast(device_type=device.type, dtype=autocast_dtype):
-            loss, num_tokens = model(
-                src, tgt, label_smoothing=train_cfg.label_smoothing
-            )
+            if train_cfg.rdrop_alpha > 0.0:
+                loss1, (logits1, num_tokens) = model(
+                    src, tgt, return_outputs=True, label_smoothing=train_cfg.label_smoothing
+                )
+                loss2, (logits2, _) = model(
+                    src, tgt, return_outputs=True, label_smoothing=train_cfg.label_smoothing
+                )
+
+                ce_loss = 0.5 * (loss1 + loss2)
+
+                # Compute KL divergence
+                p_loss = F.kl_div(F.log_softmax(logits1, dim=-1), F.softmax(logits2, dim=-1), reduction='none')
+                q_loss = F.kl_div(F.log_softmax(logits2, dim=-1), F.softmax(logits1, dim=-1), reduction='none')
+
+                p_loss = p_loss.sum(dim=-1)
+                q_loss = q_loss.sum(dim=-1)
+
+                pad_mask = (tgt[:, 1:] == model_cfg.pad_id)
+                p_loss.masked_fill_(pad_mask, 0.0)
+                q_loss.masked_fill_(pad_mask, 0.0)
+
+                kl_loss = (p_loss.sum() + q_loss.sum()) / 2
+
+                loss = ce_loss + train_cfg.rdrop_alpha * kl_loss
+            else:
+                loss, num_tokens = model(
+                    src, tgt, label_smoothing=train_cfg.label_smoothing
+                )
 
             # Handle DataParallel output (vectors per GPU)
             if loss.ndim > 0:

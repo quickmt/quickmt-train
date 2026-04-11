@@ -100,6 +100,9 @@ class TrainConfig:
     adam_beta1: float = 0.9
     adam_beta2: float = 0.998
 
+    # Regularization
+    rdrop_alpha: float = 0.0
+
     # Scheduler
     scheduler_type: str = "inv_sqrt"  # "inv_sqrt" or "cosine"
     warmup_steps: int = 5000
