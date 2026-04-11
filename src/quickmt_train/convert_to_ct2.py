@@ -164,13 +164,29 @@ def set_multihead_attention(spec, state_dict, prefix, self_attention=True):
 
 
 def convert_vocab(sp_vocab_path):
-    """Load SentencePiece vocab file and return tokens list."""
+    """Load SentencePiece vocab file and return tokens list.
+
+    Handles both standard vocab files and files with special token markers.
+    Filters out empty lines and handles tab-separated format: token\\tscore
+    """
     tokens = []
     with open(sp_vocab_path, "r", encoding="utf-8") as f:
         for line in f:
-            parts = line.strip().split("\t")
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
             if parts:
-                tokens.append(parts[0])
+                token = parts[0]
+                # Skip tokens with very low scores (typically < -100 are unused)
+                if len(parts) >= 2:
+                    try:
+                        score = float(parts[1])
+                        if score < -100:
+                            continue
+                    except ValueError:
+                        pass
+                tokens.append(token)
     return tokens
 
 
@@ -224,6 +240,7 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     is_gated = getattr(model_cfg, "mlp_type", "standard") == "gated"
     use_rms_norm = getattr(model_cfg, "norm_type", "layernorm") == "rmsnorm"
     tie_decoder_embeddings = getattr(model_cfg, "tie_decoder_embeddings", False)
+    joint_vocab = getattr(model_cfg, "joint_vocab", False)
 
     encoder_spec = ctranslate2.specs.TransformerEncoderSpec(
         num_layers=model_cfg.enc_layers,
@@ -252,16 +269,20 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
             else src_emb.numpy()
         )
 
-    tgt_emb = state_dict.get("tgt_tok_emb.embedding.weight")
-    if tgt_emb is None and tie_decoder_embeddings:
-        tgt_emb = state_dict.get("generator.weight")
+    if joint_vocab:
+        # Joint vocab: src and tgt share the same embedding
+        decoder_spec.embeddings.weight = encoder_spec.embeddings[0].weight
+    else:
+        tgt_emb = state_dict.get("tgt_tok_emb.embedding.weight")
+        if tgt_emb is None and tie_decoder_embeddings:
+            tgt_emb = state_dict.get("generator.weight")
 
-    if tgt_emb is not None:
-        decoder_spec.embeddings.weight = (
-            tgt_emb.detach().float().cpu().numpy()
-            if hasattr(tgt_emb, "detach")
-            else tgt_emb.numpy()
-        )
+        if tgt_emb is not None:
+            decoder_spec.embeddings.weight = (
+                tgt_emb.detach().float().cpu().numpy()
+                if hasattr(tgt_emb, "detach")
+                else tgt_emb.numpy()
+            )
 
     # Position Encodings
     pe_tensor = state_dict.get("positional_encoding.pe")
@@ -275,7 +296,7 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
         decoder_spec.position_encodings.encodings = pe
 
     # Generator (Projection)
-    if tie_decoder_embeddings:
+    if joint_vocab or tie_decoder_embeddings:
         decoder_spec.projection.weight = decoder_spec.embeddings.weight
         _, gen_bias = get_layer_weights(state_dict, "generator")
         if gen_bias is not None:
@@ -390,12 +411,18 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     spec.config.add_source_eos = export_cfg.add_source_eos  # type: ignore
 
     # Register vocabularies
-    spec.register_source_vocabulary(
-        convert_vocab(f"{data_cfg.tokenizer_prefix_src}.vocab")
-    )
-    spec.register_target_vocabulary(
-        convert_vocab(f"{data_cfg.tokenizer_prefix_tgt}.vocab")
-    )
+    if joint_vocab:
+        joint_vocab_path = f"{data_cfg.joint_tokenizer_prefix}.vocab"
+        tokens = convert_vocab(joint_vocab_path)
+        spec.register_source_vocabulary(tokens)
+        spec.register_target_vocabulary(tokens)
+    else:
+        spec.register_source_vocabulary(
+            convert_vocab(f"{data_cfg.tokenizer_prefix_src}.vocab")
+        )
+        spec.register_target_vocabulary(
+            convert_vocab(f"{data_cfg.tokenizer_prefix_tgt}.vocab")
+        )
 
     spec.validate()
     spec.optimize(quantization=export_cfg.quantization)
@@ -403,14 +430,20 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     print(f"Model saved to {export_cfg.output_dir}")
 
     # Copy Tokenizers to output directory
-    shutil.copy(
-        f"{data_cfg.tokenizer_prefix_src}.model",
-        Path(export_cfg.output_dir) / "src.spm.model",
-    )
-    shutil.copy(
-        f"{data_cfg.tokenizer_prefix_tgt}.model",
-        Path(export_cfg.output_dir) / "tgt.spm.model",
-    )
+    if joint_vocab:
+        shutil.copy(
+            f"{data_cfg.joint_tokenizer_prefix}.model",
+            Path(export_cfg.output_dir) / "joint.spm.model",
+        )
+    else:
+        shutil.copy(
+            f"{data_cfg.tokenizer_prefix_src}.model",
+            Path(export_cfg.output_dir) / "src.spm.model",
+        )
+        shutil.copy(
+            f"{data_cfg.tokenizer_prefix_tgt}.model",
+            Path(export_cfg.output_dir) / "tgt.spm.model",
+        )
 
 
 def main():

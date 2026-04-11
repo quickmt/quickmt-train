@@ -15,6 +15,7 @@ class ModelConfig:
     dropout: float = 0.1
     vocab_size_src: int = 32000
     vocab_size_tgt: int = 32000
+    joint_vocab: bool = False  # Share a single vocabulary + tokenizer for src and tgt
     use_checkpoint: bool = False
     ff_bias: bool = True
     layernorm_eps: float = 1e-6
@@ -71,6 +72,10 @@ class DataConfig:
     def tokenizer_prefix_tgt(self) -> str:
         return os.path.join(self.experiment_name, "tokenizer_tgt")
 
+    @property
+    def joint_tokenizer_prefix(self) -> str:
+        return os.path.join(self.experiment_name, "tokenizer_joint")
+
     # Streaming & Batching
     max_tokens_per_batch: int = 6000
     buffer_size: int = 10000
@@ -115,7 +120,7 @@ class TrainConfig:
 
     # Hardware & Performance
     device: str = "cuda"  # "cuda", "cpu", or "auto"
-    precision: str = "bf16"  # "bf16", "fp16", "fp32"
+    precision: str = "bfloat16"  # "bfloat16", "float16", "fp32"
     tf32: bool = True
 
     # Logging & Validation
@@ -208,5 +213,12 @@ def load_config(path: str):
 
     # Link experiment name across configs
     data_config.experiment_name = train_config.experiment_name
+
+    # Sync joint_vocab setting if enabled
+    if model_config.joint_vocab:
+        # Use the max of src/tgt vocab sizes as the joint vocab size
+        joint_size = max(model_config.vocab_size_src, model_config.vocab_size_tgt)
+        model_config.vocab_size_src = joint_size
+        model_config.vocab_size_tgt = joint_size
 
     return model_config, data_config, train_config, export_config

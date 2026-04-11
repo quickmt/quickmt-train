@@ -109,8 +109,10 @@ def average_checkpoints_cli(experiment_dir: str, **kwargs):
         if avg_state_dict[k].is_floating_point():
             avg_state_dict[k] = avg_state_dict[k] / count
         else:
-            avg_state_dict[k] = torch.div(
-                avg_state_dict[k], count, rounding_mode="floor"
+            # For integer tensors (like token IDs), use true division and round
+            # This avoids floor rounding bias in model averaging
+            avg_state_dict[k] = torch.round(avg_state_dict[k].float() / count).to(
+                avg_state_dict[k].dtype
             )
 
     # 3. Save as .pt and .safetensors (FP32/Averaged weights)
