@@ -103,6 +103,8 @@ class TrainConfig:
     # Regularization
     rdrop_alpha: float = 0.0
     rdrop_warmup_steps: int = 0
+    dual_learning_alpha: float = 0.0
+    dual_learning_warmup_steps: int = 0
 
     # Scheduler
     scheduler_type: str = "inv_sqrt"  # "inv_sqrt" or "cosine"

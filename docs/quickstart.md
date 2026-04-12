@@ -60,6 +60,7 @@ This will download four files into your current directory:
 Now we will need to create a configuration file. Copy the following into a file named "isen-tiny-1.yaml":
 
 ```yaml
+
 train:
   experiment_name: "isen-tiny-1"
   lr: 1.0e-3
@@ -76,6 +77,7 @@ data:
   tgt_lang: "en"
   src_dev_path: "quickmt-valid.is-en.is"
   tgt_dev_path: "quickmt-valid.is-en.en"
+  input_sentence_size: 1000000 # increase for better (but slower) tokenizer training 
   max_tokens_per_batch: 20000 # tune this value for your GPU memory
   corpora: 
     - src_file: "quickmt-train.is-en.is"
