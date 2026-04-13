@@ -2,7 +2,7 @@
 train:
   experiment_name: "isen-tiny-1"
   lr: 1.0e-3
-  accum_steps: 24
+  accum_steps: 3
   warmup_steps: 5000
   max_steps: 20000
   eval_steps: 1000
@@ -16,7 +16,7 @@ data:
   src_dev_path: "quickmt-valid.is-en.is"
   tgt_dev_path: "quickmt-valid.is-en.en"
   input_sentence_size: 1000000 # increase for better (but slower) tokenizer training 
-  max_tokens_per_batch: 5000 # tune this value for your GPU memory
+  max_tokens_per_batch: 40000 # tune this value for your GPU memory
   corpora: 
     - src_file: "quickmt-train.is-en.is"
       tgt_file: "quickmt-train.is-en.en"

@@ -184,7 +184,7 @@ quickmt-export --experiment_dir ./isen-tiny-1
 quickmt-flores-download isl_Latn eng_Latn
 
 # Evaluate (uses quickmt library, https://github.com/quickmt/quickmt)
-quickmt-eval --src_file flores_plus_isl_Latn.txt --ref_file flores_plus_eng_Latn.txt --device cuda --batch_size 32 --beam_size 5 --model ./isen-tiny-1/exported_model
+quickmt-eval --src_file flores_plus_isl_Latn.txt --ref_file flores_plus_eng_Latn.txt --device cpu --batch_size 32 --beam_size 5 --model ./isen-tiny-1/exported_model
 ```
 
 ## 6 - Done!
