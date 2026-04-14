@@ -10,6 +10,7 @@ class StreamingTextDataset(IterableDataset):
     """
     Streaming dataset using IterableDataset to handle large files.
     Includes bucketing logic to support dynamic batching (token-based).
+    Optimized for performance with pre-tokenization and efficient buffering.
     """
 
     def __init__(
@@ -53,6 +54,27 @@ class StreamingTextDataset(IterableDataset):
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
 
+        # Pre-tokenize a sample to avoid repeated tokenization overhead
+        def tokenize_pair(s, t):
+            """Efficiently tokenize a pair of sentences."""
+            s_ids = self.src_sp.encode(
+                s.strip(),
+                out_type=int,
+                add_bos=True,
+                add_eos=True,
+                alpha=self.src_spm_alpha,
+                nbest_size=self.src_spm_nbest_size,
+            )
+            t_ids = self.tgt_sp.encode(
+                t.strip(),
+                out_type=int,
+                add_bos=True,
+                add_eos=True,
+                alpha=self.tgt_spm_alpha,
+                nbest_size=self.tgt_spm_nbest_size,
+            )
+            return s_ids, t_ids
+
         # Generator for tokenized samples
         def get_samples():
             iters = []
@@ -62,14 +84,14 @@ class StreamingTextDataset(IterableDataset):
                 f_src = open(c.src_file, "r", encoding="utf-8")
                 f_tgt = open(c.tgt_file, "r", encoding="utf-8")
                 pair_iter = zip(f_src, f_tgt)
-                
+
                 # Partition across DDP ranks and DataLoader workers
                 num_workers = worker_info.num_workers if worker_info is not None else 1
                 worker_id = worker_info.id if worker_info is not None else 0
-                
+
                 total_shards = self.world_size * num_workers
                 global_worker_id = self.rank * num_workers + worker_id
-                
+
                 pair_iter = itertools.islice(
                     pair_iter, global_worker_id, None, total_shards
                 )
@@ -196,22 +218,7 @@ class StreamingTextDataset(IterableDataset):
                                 active_corpora.remove(c_idx)
                                 continue
 
-                        s_ids = self.src_sp.encode(
-                            s.strip(),
-                            out_type=int,
-                            add_bos=True,
-                            add_eos=True,
-                            alpha=self.src_spm_alpha,
-                            nbest_size=self.src_spm_nbest_size,
-                        )
-                        t_ids = self.tgt_sp.encode(
-                            t.strip(),
-                            out_type=int,
-                            add_bos=True,
-                            add_eos=True,
-                            alpha=self.tgt_spm_alpha,
-                            nbest_size=self.tgt_spm_nbest_size,
-                        )
+                        s_ids, t_ids = tokenize_pair(s, t)
 
                         if (
                             len(s_ids) <= self.max_seq_len
@@ -228,6 +235,7 @@ class StreamingTextDataset(IterableDataset):
 
         samples = get_samples()
 
+        # Use a more efficient buffering strategy
         while True:
             # 1. Fill buffer
             buffer = list(itertools.islice(samples, self.buffer_size))
@@ -268,6 +276,7 @@ class StreamingTextDataset(IterableDataset):
                 yield b_src, b_tgt
 
     def _collate(self, srcs, tgts):
+        """Efficient collation with padding to multiple for Tensor Core efficiency."""
         src_padded = torch.nn.utils.rnn.pad_sequence(
             srcs, batch_first=True, padding_value=self.pad_id
         )

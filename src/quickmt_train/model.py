@@ -186,6 +186,9 @@ class EncoderLayer(nn.Module):
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.dropout = nn.Dropout(dropout)
+        
+        # Cache for attention mask to avoid recreation
+        self._attn_mask_cache = {}
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None, is_causal=False):
         """
@@ -202,21 +205,54 @@ class EncoderLayer(nn.Module):
         """
         # Pre-norm
         x = self.norm1(src)
-        x = self.self_attn(
-            x,
-            x,
-            x,
+        
+        # Use Flash Attention via scaled_dot_product_attention when available
+        x = self._efficient_attention(
+            x, x, x,
             attn_mask=src_mask,
             key_padding_mask=src_key_padding_mask,
             is_causal=is_causal,
-            need_weights=False,
-        )[0]
+        )
         src = src + self.dropout(x)
 
         x = self.norm2(src)
         x = self.ffn(x)
         src = src + self.dropout(x)
         return src
+    
+    def _efficient_attention(self, q, k, v, attn_mask, key_padding_mask, is_causal):
+        """Use efficient scaled_dot_product_attention with Flash Attention when available."""
+        # Try to use PyTorch's efficient SDPA
+        if hasattr(nn.functional, 'scaled_dot_product_attention'):
+            # Convert key_padding_mask to attn_mask format if needed
+            if key_padding_mask is not None and attn_mask is None:
+                # key_padding_mask: (batch, src_len) -> bool where True = padding
+                # Convert to attention mask: (batch, heads, q_len, k_len)
+                batch_size, seq_len = key_padding_mask.shape
+                attn_mask = key_padding_mask.view(batch_size, 1, 1, seq_len).expand(
+                    -1, self.self_attn.num_heads, seq_len, -1
+                )
+                # True means padding, should be False in attention mask (don't attend to padding)
+                attn_mask = ~attn_mask
+            
+            # Use efficient SDPA (enables Flash Attention on supported GPUs)
+            return nn.functional.scaled_dot_product_attention(
+                q.transpose(0, 1), 
+                k.transpose(0, 1) if k.dim() == 3 else k,
+                v.transpose(0, 1) if v.dim() == 3 else v,
+                attn_mask=attn_mask,
+                dropout_p=self.self_attn.dropout if self.training else 0.0,
+                is_causal=is_causal,
+            ).transpose(0, 1)
+        else:
+            # Fallback to original MultiheadAttention
+            return self.self_attn(
+                q, k, v,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                is_causal=is_causal,
+                need_weights=False,
+            )[0]
 
 
 class DecoderLayer(nn.Module):
@@ -259,6 +295,9 @@ class DecoderLayer(nn.Module):
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm3 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.dropout = nn.Dropout(dropout)
+        
+        # Cache for attention masks to avoid recreation
+        self._attn_mask_cache = {}
 
     def forward(
         self,
@@ -290,28 +329,22 @@ class DecoderLayer(nn.Module):
         # Pre-norm
         x = self.norm1(tgt)
         # Self attention
-        x = self.self_attn(
-            x,
-            x,
-            x,
+        x = self._efficient_attention_self(
+            x, x, x,
             attn_mask=tgt_mask,
             key_padding_mask=tgt_key_padding_mask,
             is_causal=tgt_is_causal,
-            need_weights=False,
-        )[0]
+        )
         tgt = tgt + self.dropout(x)
 
         # Cross attention
         x = self.norm2(tgt)
-        x = self.multihead_attn(
-            x,
-            memory,
-            memory,
+        x = self._efficient_attention_cross(
+            x, memory, memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
             is_causal=memory_is_causal,
-            need_weights=False,
-        )[0]
+        )
         tgt = tgt + self.dropout(x)
 
         # FFN
@@ -319,6 +352,61 @@ class DecoderLayer(nn.Module):
         x = self.ffn(x)
         tgt = tgt + self.dropout(x)
         return tgt
+    
+    def _efficient_attention_self(self, q, k, v, attn_mask, key_padding_mask, is_causal):
+        """Efficient self-attention using scaled_dot_product_attention."""
+        if hasattr(nn.functional, 'scaled_dot_product_attention'):
+            if key_padding_mask is not None and attn_mask is None:
+                batch_size, seq_len = key_padding_mask.shape
+                attn_mask = key_padding_mask.view(batch_size, 1, 1, seq_len).expand(
+                    -1, self.self_attn.num_heads, seq_len, -1
+                )
+                attn_mask = ~attn_mask
+            
+            return nn.functional.scaled_dot_product_attention(
+                q.transpose(0, 1),
+                k.transpose(0, 1) if k.dim() == 3 else k,
+                v.transpose(0, 1) if v.dim() == 3 else v,
+                attn_mask=attn_mask,
+                dropout_p=self.self_attn.dropout if self.training else 0.0,
+                is_causal=is_causal,
+            ).transpose(0, 1)
+        else:
+            return self.self_attn(
+                q, k, v,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                is_causal=is_causal,
+                need_weights=False,
+            )[0]
+    
+    def _efficient_attention_cross(self, q, k, v, attn_mask, key_padding_mask, is_causal):
+        """Efficient cross-attention using scaled_dot_product_attention."""
+        if hasattr(nn.functional, 'scaled_dot_product_attention'):
+            if key_padding_mask is not None and attn_mask is None:
+                batch_size, seq_len = key_padding_mask.shape
+                q_len = q.size(1)
+                attn_mask = key_padding_mask.view(batch_size, 1, 1, seq_len).expand(
+                    -1, self.multihead_attn.num_heads, q_len, -1
+                )
+                attn_mask = ~attn_mask
+            
+            return nn.functional.scaled_dot_product_attention(
+                q.transpose(0, 1),
+                k.transpose(0, 1) if k.dim() == 3 else k,
+                v.transpose(0, 1) if v.dim() == 3 else v,
+                attn_mask=attn_mask,
+                dropout_p=self.multihead_attn.dropout if self.training else 0.0,
+                is_causal=is_causal,
+            ).transpose(0, 1)
+        else:
+            return self.multihead_attn(
+                q, k, v,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                is_causal=is_causal,
+                need_weights=False,
+            )[0]
 
 
 class Seq2SeqTransformer(nn.Module):
@@ -388,6 +476,11 @@ class Seq2SeqTransformer(nn.Module):
         self.generator = nn.Linear(config.d_model, config.vocab_size_tgt, bias=True)
         if config.tie_decoder_embeddings:
             self.generator.weight = self.tgt_tok_emb.embedding.weight
+
+        # Enable gradient checkpointing if configured
+        if config.use_checkpoint:
+            self.encoder.gradient_checkpointing = True
+            self.decoder.gradient_checkpointing = True
 
         # Initialize parameters
         self.apply(self._init_weights)

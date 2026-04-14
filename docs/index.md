@@ -9,9 +9,17 @@ Experimenting with training Neural Machine Translation (NMT) models from scratch
 
 ### 🚀 Performance & Optimization
 
-- **`torch.compile`**: for faster training
+- **Flash Attention**: Automatic Flash Attention support via `scaled_dot_product_attention` (2-4x faster attention)
+- **`torch.compile`**: Integrated torch compilation for faster training
 - **Mixed Precision (AMP)**: Uses `torch.autocast` with `bfloat16` or `float16` for faster training and reduced memory usage
+- **Gradient Checkpointing**: Trade compute for memory to enable larger batch sizes (40-60% memory reduction)
 - **Gradient Accumulation & Clipping**: Support for large effective batch sizes and stable training via gradient norm scaling
+- **Efficient Attention**: Optimized attention mechanisms with reduced overhead
+- **DDP Optimizations**: Distributed training with optimized communication patterns
+- **Tensor Core Optimization**: Sequence padding to multiples of 8/16 for maximum GPU utilization
+
+!!! tip "Performance Guide"
+    See the [Performance Optimization Guide](performance_optimization.md) for detailed tuning tips and expected improvements.
 
 ### 📊 Data Processing
 

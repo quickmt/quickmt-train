@@ -15,13 +15,17 @@ class ModelConfig:
     dropout: float = 0.1
     vocab_size_src: int = 32000
     vocab_size_tgt: int = 32000
-    use_checkpoint: bool = False
+    use_checkpoint: bool = False  # Gradient checkpointing for memory efficiency
     ff_bias: bool = True
     layernorm_eps: float = 1e-6
     activation: str = "gelu"
     mlp_type: str = "standard"  # "standard" or "gated"
     norm_type: str = "layernorm"  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
+    
+    # Performance optimizations
+    use_flash_attention: bool = True  # Use Flash Attention via SDPA
+    use_efficient_attention: bool = True  # Use torch.nn.functional.scaled_dot_product_attention
 
     # Special Tokens
     pad_id: int = 0
