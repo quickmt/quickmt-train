@@ -236,4 +236,7 @@ lid.176.bin
 is-en-1/
 flores_plus*
 *-base/
-
+quickmt-train*
+quickmt-valid*
+isen*
+src/quickmt_train/evaluate_ollama.py
