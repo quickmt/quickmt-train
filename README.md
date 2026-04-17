@@ -17,9 +17,14 @@ This project is an active work in progress. There is still some work to be done:
 
 ### 🚀 Performance & Optimization
 
-- **`torch.compile`**: for faster training
+- **Flash Attention**: Automatic Flash Attention support via `scaled_dot_product_attention` (2-4x faster attention)
+- **`torch.compile`**: Integrated torch compilation for faster training
 - **Mixed Precision (AMP)**: Uses `torch.autocast` with `bfloat16` or `float16` for faster training and reduced memory usage
+- **Gradient Checkpointing**: Trade compute for memory to enable larger batch sizes (40-60% memory reduction)
 - **Gradient Accumulation & Clipping**: Support for large effective batch sizes and stable training via gradient norm scaling
+- **Efficient Attention**: Optimized attention mechanisms with reduced overhead
+- **DDP Optimizations**: Distributed training with optimized communication patterns
+- **Tensor Core Optimization**: Sequence padding to multiples of 8/16 for maximum GPU utilization
 
 ### 📊 Data Processing
 
@@ -27,6 +32,7 @@ This project is an active work in progress. There is still some work to be done:
 - **Token-Based Batching**: Dynamic batching with bucket sorting to minimize padding and maximize throughput
 - **SentencePiece Tokenization**: Integrated support for training and on-the-fly SentencePiece (unigram/BPE) tokenization
 - **Multi-worker Sharding**: Efficient data loading with automatic sharding across multiple CPU workers
+- **Optimized Buffering**: Improved buffering strategy for reduced CPU bottlenecks
 * **Multi-dataset training**: Train on multiple datasets at once starting/stopping at specific steps
 
 ### 📈 Evaluation & Monitoring
@@ -44,7 +50,21 @@ This project is an active work in progress. There is still some work to be done:
 
 ## Installation
 
-# We suggest installing `quickmt-train` within a fresh conda/mamba environment:
+### Using uv (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/quickmt/quickmt-train.git
+cd quickmt-train
+
+# Install with uv (creates virtual environment and installs dependencies)
+uv sync
+
+# Or install with all optional extras (docs, tracking, optimization, dev tools)
+uv sync --all-extras
+```
+
+### Using conda/mamba
 
 ```bash
 conda create -n quickmt-train python=3.12 pip

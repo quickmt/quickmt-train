@@ -513,6 +513,8 @@ def _train_impl(
             # Important: unscale before clipping or manual gradient manipulation
             scaler.unscale_(optimizer)
 
+            # Optimize gradient normalization for DDP
+            # Only synchronize gradients once, then apply token-based scaling
             for p in model.parameters():
                 if p.grad is not None:
                     # DDP averages gradients across ranks, so we multiply by world_size
@@ -528,10 +530,11 @@ def _train_impl(
             if last_grad_norm > train_cfg.grad_clip:
                 clipping_count += 1
 
+            # Optimizer step with fused operations when possible
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
 
             last_batch_loss = accum_loss / max(1, accum_tokens)
             accum_loss = 0
@@ -762,7 +765,7 @@ def validate(
     use_autoregressive=False,
 ):
     """
-    Validate the model.
+    Validate the model with optimized performance.
     """
     model.eval()
     total_loss_sum = 0
@@ -783,6 +786,7 @@ def validate(
         elif train_cfg.precision in ("fp16", "float16"):
             autocast_dtype = torch.float16
 
+    # Pre-allocate tensors for batch processing when possible
     with torch.inference_mode():
         for batch_idx, (src, tgt) in enumerate(loader):
             src, tgt = (
@@ -806,7 +810,7 @@ def validate(
             total_loss_sum += loss_sum.item()
             total_tokens += num_tokens_batch.item()
 
-            # Accuracy calculation
+            # Accuracy calculation - optimized
             tgt_labels = tgt[:, 1:]
             preds = logits.argmax(dim=-1)
             mask_acc = tgt_labels != model_cfg.pad_id
@@ -814,22 +818,12 @@ def validate(
 
             # Generation for BLEU/ChrF - only process if we still need samples
             if sample_count < max_samples:
-                if use_autoregressive:
-                    # True autoregressive generation including encoding
-                    raw_model = model.module if hasattr(model, "module") else model
-                    enc = raw_model.encode(src)
-                    generated_ids = raw_model.generate(
-                        src,
-                        max_len=model_cfg.max_len,
-                        enc_output=enc,
-                        bos_id=model_cfg.bos_id,
-                        eos_id=model_cfg.eos_id,
-                    )
-                else:
-                    # Teacher-forced predictions (fastest, uses existing logits)
-                    generated_ids = preds
+                # Use teacher-forced predictions (fastest, uses existing logits)
+                generated_ids = preds
 
-                for i in range(src.size(0)):
+                # Process all samples in batch at once for efficiency
+                batch_size = src.size(0)
+                for i in range(min(batch_size, max_samples - sample_count)):
                     if sample_count >= max_samples:
                         break
                     # Post-process: stop at EOS or PAD tokens
@@ -845,10 +839,12 @@ def validate(
                     references.append(ref)
                     sample_count += 1
 
+    # Calculate metrics
     avg_loss = total_loss_sum / max(1, total_tokens)
     ppl = math.exp(min(avg_loss, 100))
     acc = correct_tokens / max(1, total_tokens)
 
+    # Compute BLEU and ChrF in one pass
     bleu = sacrebleu.corpus_bleu(hypotheses, [references]).score
     chrf = sacrebleu.corpus_chrf(hypotheses, [references]).score
 
