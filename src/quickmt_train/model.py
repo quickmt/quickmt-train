@@ -150,6 +150,91 @@ def get_norm(d_model, eps, bias, norm_type):
         return nn.LayerNorm(d_model, eps=eps, bias=bias)
 
 
+class GroupedQueryAttention(nn.Module):
+    """
+    Grouped Query Attention module matching the interface of nn.MultiheadAttention.
+    """
+    def __init__(self, d_model, num_heads, num_heads_kv, dropout=0.1, bias=False, batch_first=True):
+        super().__init__()
+        assert batch_first, "Only batch_first=True is supported"
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        self.head_dim = d_model // num_heads
+        self.num_heads = num_heads
+        self.num_heads_kv = num_heads_kv
+        self.d_model = d_model
+        self.batch_first = batch_first
+        
+        self.q_proj = nn.Linear(d_model, num_heads * self.head_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
+        self.out_proj = nn.Linear(num_heads * self.head_dim, d_model, bias=bias)
+        self.dropout_p = dropout
+
+    def forward(
+        self,
+        query,
+        key,
+        value,
+        attn_mask=None,
+        key_padding_mask=None,
+        is_causal=False,
+        need_weights=False,
+    ):
+        bsz, q_len, _ = query.size()
+        kv_len = key.size(1)
+
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+
+        # Reshape to (B, num_heads, L, head_dim)
+        q = q.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(bsz, kv_len, self.num_heads_kv, self.head_dim).transpose(1, 2)
+        v = v.view(bsz, kv_len, self.num_heads_kv, self.head_dim).transpose(1, 2)
+
+        num_kv_groups = self.num_heads // self.num_heads_kv
+        if num_kv_groups > 1:
+            k = k.repeat_interleave(num_kv_groups, dim=1)
+            v = v.repeat_interleave(num_kv_groups, dim=1)
+
+        mask = None
+        if attn_mask is not None or key_padding_mask is not None:
+            if attn_mask is not None:
+                # PyTorch MHA bool mask: True = ignore
+                if attn_mask.dtype == torch.bool:
+                    m = (attn_mask == False).unsqueeze(0).unsqueeze(0)
+                else:
+                    m = attn_mask.unsqueeze(0).unsqueeze(0)
+            else:
+                m = None
+
+            if key_padding_mask is not None:
+                # True = ignore
+                km = (key_padding_mask == False).unsqueeze(1).unsqueeze(2)
+                if m is not None:
+                    # combine bool masks
+                    if m.dtype == torch.bool and km.dtype == torch.bool:
+                        m = m & km
+                    else:
+                        m = m.to(torch.bool) & km
+                else:
+                    m = km
+            mask = m
+            is_causal = False
+
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=is_causal
+        )
+
+        out = out.transpose(1, 2).contiguous().view(bsz, q_len, self.num_heads * self.head_dim)
+        out = self.out_proj(out)
+        
+        return out, None
+
+
 class EncoderLayer(nn.Module):
     """
     Transformer Encoder Layer with pre-normalization.
@@ -177,11 +262,17 @@ class EncoderLayer(nn.Module):
         bias=False,
         mlp_type="standard",
         norm_type="layernorm",
+        n_kv_heads=None,
     ):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-        )
+        if n_kv_heads is not None and n_kv_heads != nhead:
+            self.self_attn = GroupedQueryAttention(
+                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
+            )
+        else:
+            self.self_attn = nn.MultiheadAttention(
+                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
+            )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -246,14 +337,23 @@ class DecoderLayer(nn.Module):
         bias=False,
         mlp_type="standard",
         norm_type="layernorm",
+        n_kv_heads=None,
     ):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-        )
-        self.multihead_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-        )
+        if n_kv_heads is not None and n_kv_heads != nhead:
+            self.self_attn = GroupedQueryAttention(
+                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
+            )
+            self.multihead_attn = GroupedQueryAttention(
+                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
+            )
+        else:
+            self.self_attn = nn.MultiheadAttention(
+                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
+            )
+            self.multihead_attn = nn.MultiheadAttention(
+                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
+            )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -356,6 +456,7 @@ class Seq2SeqTransformer(nn.Module):
             bias=config.ff_bias,
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
+            n_kv_heads=getattr(config, 'n_kv_heads', None),
         )
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -375,6 +476,7 @@ class Seq2SeqTransformer(nn.Module):
             bias=config.ff_bias,
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
+            n_kv_heads=getattr(config, 'n_kv_heads', None),
         )
         self.decoder = nn.TransformerDecoder(
             decoder_layer,
@@ -423,6 +525,16 @@ class Seq2SeqTransformer(nn.Module):
             if module.in_proj_bias is not None:
                 nn.init.zeros_(module.in_proj_bias)
             # out_proj is a sub-module handled by the Linear case above
+        elif isinstance(module, GroupedQueryAttention):
+            nn.init.xavier_uniform_(module.q_proj.weight)
+            nn.init.xavier_uniform_(module.k_proj.weight)
+            nn.init.xavier_uniform_(module.v_proj.weight)
+            nn.init.xavier_uniform_(module.out_proj.weight)
+            if module.q_proj.bias is not None:
+                nn.init.zeros_(module.q_proj.bias)
+                nn.init.zeros_(module.k_proj.bias)
+                nn.init.zeros_(module.v_proj.bias)
+                nn.init.zeros_(module.out_proj.bias)
 
     def encode(self, src=None, src_mask=None, src_probs=None):
         """

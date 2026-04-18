@@ -10,6 +10,7 @@ class ModelConfig:
     enc_layers: int = 12
     dec_layers: int = 2
     n_heads: int = 16
+    n_kv_heads: int = None
     ffn_dim: int = 4096
     max_len: int = 512  # Hard filter during data loading
     dropout: float = 0.1

@@ -93,36 +93,69 @@ def _make_sinusoidal_position_encodings(max_len, d_model):
 
 
 def set_multihead_attention(spec, state_dict, prefix, self_attention=True):
-    """Set weights for a CT2 MultiHeadAttentionSpec from PyTorch MultiheadAttention."""
+    """Set weights for a CT2 MultiHeadAttentionSpec from PyTorch MultiheadAttention or GroupedQueryAttention."""
+    def to_numpy(t):
+        if t is None: return None
+        return t.detach().float().cpu().numpy() if hasattr(t, "detach") else t.numpy()
+
+    q_proj_weight = state_dict.get(f"{prefix}.q_proj.weight")
+    if q_proj_weight is not None:
+        # GroupedQueryAttention
+        q = to_numpy(q_proj_weight)
+        k = to_numpy(state_dict.get(f"{prefix}.k_proj.weight"))
+        v = to_numpy(state_dict.get(f"{prefix}.v_proj.weight"))
+        qb = to_numpy(state_dict.get(f"{prefix}.q_proj.bias"))
+        kb = to_numpy(state_dict.get(f"{prefix}.k_proj.bias"))
+        vb = to_numpy(state_dict.get(f"{prefix}.v_proj.bias"))
+        out_w = to_numpy(state_dict.get(f"{prefix}.out_proj.weight"))
+        out_b = to_numpy(state_dict.get(f"{prefix}.out_proj.bias"))
+
+        if self_attention:
+            spec.linear[0].weight = np.concatenate([q, k, v], axis=0)
+            if qb is not None:
+                spec.linear[0].bias = np.concatenate([qb, kb, vb], axis=0)
+            else:
+                spec.linear[0].bias = np.zeros(q.shape[0] + k.shape[0] + v.shape[0], dtype=np.float32)
+                
+            spec.linear[1].weight = out_w
+            if out_b is not None:
+                spec.linear[1].bias = out_b
+            else:
+                spec.linear[1].bias = np.zeros(out_w.shape[0], dtype=np.float32)
+        else:
+            spec.linear[0].weight = q
+            if qb is not None:
+                spec.linear[0].bias = qb
+            else:
+                spec.linear[0].bias = np.zeros(q.shape[0], dtype=np.float32)
+                
+            spec.linear[1].weight = np.concatenate([k, v], axis=0)
+            if kb is not None:
+                spec.linear[1].bias = np.concatenate([kb, vb], axis=0)
+            else:
+                spec.linear[1].bias = np.zeros(k.shape[0] + v.shape[0], dtype=np.float32)
+                
+            spec.linear[2].weight = out_w
+            if out_b is not None:
+                spec.linear[2].bias = out_b
+            else:
+                spec.linear[2].bias = np.zeros(out_w.shape[0], dtype=np.float32)
+        return
+
+    # Standard nn.MultiheadAttention
     in_proj_weight = state_dict.get(f"{prefix}.in_proj_weight")
     in_proj_bias = state_dict.get(f"{prefix}.in_proj_bias")
     out_proj_weight = state_dict.get(f"{prefix}.out_proj.weight")
     out_proj_bias = state_dict.get(f"{prefix}.out_proj.bias")
 
     if in_proj_weight is not None:
-        in_proj_weight = (
-            in_proj_weight.detach().float().cpu().numpy()
-            if hasattr(in_proj_weight, "detach")
-            else in_proj_weight.numpy()
-        )
+        in_proj_weight = to_numpy(in_proj_weight)
     if in_proj_bias is not None:
-        in_proj_bias = (
-            in_proj_bias.detach().float().cpu().numpy()
-            if hasattr(in_proj_bias, "detach")
-            else in_proj_bias.numpy()
-        )
+        in_proj_bias = to_numpy(in_proj_bias)
     if out_proj_weight is not None:
-        out_proj_weight = (
-            out_proj_weight.detach().float().cpu().numpy()
-            if hasattr(out_proj_weight, "detach")
-            else out_proj_weight.numpy()
-        )
+        out_proj_weight = to_numpy(out_proj_weight)
     if out_proj_bias is not None:
-        out_proj_bias = (
-            out_proj_bias.detach().float().cpu().numpy()
-            if hasattr(out_proj_bias, "detach")
-            else out_proj_bias.numpy()
-        )
+        out_proj_bias = to_numpy(out_proj_bias)
 
     if self_attention:
         # linear[0] is in_proj
@@ -232,7 +265,7 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     use_rms_norm = getattr(model_cfg, "norm_type", "layernorm") == "rmsnorm"
     tie_decoder_embeddings = getattr(model_cfg, "tie_decoder_embeddings", False)
 
-    encoder_spec = ctranslate2.specs.TransformerEncoderSpec(
+    enc_kwargs = dict(
         num_layers=model_cfg.enc_layers,
         num_heads=model_cfg.n_heads,
         pre_norm=True,
@@ -240,7 +273,11 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
         ffn_glu=is_gated,
         rms_norm=use_rms_norm,
     )
-    decoder_spec = ctranslate2.specs.TransformerDecoderSpec(
+    if getattr(model_cfg, "n_kv_heads", None) is not None:
+        enc_kwargs["num_heads_kv"] = model_cfg.n_kv_heads
+    encoder_spec = ctranslate2.specs.TransformerEncoderSpec(**enc_kwargs)
+
+    dec_kwargs = dict(
         num_layers=model_cfg.dec_layers,
         num_heads=model_cfg.n_heads,
         pre_norm=True,
@@ -248,6 +285,9 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
         ffn_glu=is_gated,
         rms_norm=use_rms_norm,
     )
+    if getattr(model_cfg, "n_kv_heads", None) is not None:
+        dec_kwargs["num_heads_kv"] = model_cfg.n_kv_heads
+    decoder_spec = ctranslate2.specs.TransformerDecoderSpec(**dec_kwargs)
 
     # ... mapping ...
     # Embeddings
