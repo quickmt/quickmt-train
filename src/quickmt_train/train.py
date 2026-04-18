@@ -328,6 +328,8 @@ def _train_impl(
                 continue
             if pn.endswith("bias") or p.ndim == 1:
                 no_decay_params.append(p)
+            elif not getattr(train_cfg, "weight_decay_embeddings", True) and "emb" in pn:
+                no_decay_params.append(p)
             else:
                 decay_params.append(p)
 

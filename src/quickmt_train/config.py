@@ -95,6 +95,7 @@ class TrainConfig:
     # Optimizer
     lr: float = 1.0e-3
     weight_decay: float = 0.01
+    weight_decay_embeddings: bool = True
     adam_eps: float = 1e-6
     label_smoothing: float = 0.1
     adam_beta1: float = 0.9
