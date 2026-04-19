@@ -234,7 +234,8 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     # If no averaged model, try to find the best checkpoint
     if not os.path.exists(model_file):
         checkpoints = sorted(
-            Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")
+            list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")) +
+            list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
         )
         if checkpoints:
             model_file = str(checkpoints[-1])

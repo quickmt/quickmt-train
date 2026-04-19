@@ -202,7 +202,7 @@ class GroupedQueryAttention(nn.Module):
             if attn_mask is not None:
                 # PyTorch MHA bool mask: True = ignore
                 if attn_mask.dtype == torch.bool:
-                    m = (attn_mask == False).unsqueeze(0).unsqueeze(0)
+                    m = attn_mask.to(torch.bool).logical_not().unsqueeze(0).unsqueeze(0)
                 else:
                     m = attn_mask.unsqueeze(0).unsqueeze(0)
             else:
@@ -210,7 +210,7 @@ class GroupedQueryAttention(nn.Module):
 
             if key_padding_mask is not None:
                 # True = ignore
-                km = (key_padding_mask == False).unsqueeze(1).unsqueeze(2)
+                km = key_padding_mask.to(torch.bool).logical_not().unsqueeze(1).unsqueeze(2)
                 if m is not None:
                     # combine bool masks
                     if m.dtype == torch.bool and km.dtype == torch.bool:
