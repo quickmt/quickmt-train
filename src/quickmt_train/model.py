@@ -536,25 +536,19 @@ class Seq2SeqTransformer(nn.Module):
                 nn.init.zeros_(module.v_proj.bias)
                 nn.init.zeros_(module.out_proj.bias)
 
-    def encode(self, src=None, src_mask=None, src_probs=None):
+    def encode(self, src=None, src_mask=None):
         """
         Encode the source sequence.
 
         Args:
             src (torch.Tensor): Source sequence of shape (batch_size, src_len).
             src_mask (torch.Tensor, optional): Encoder attention mask.
-            src_probs (torch.Tensor, optional): Soft source probabilities of shape (batch, len, vocab).
 
         Returns:
             torch.Tensor: Encoded sequence (memory).
         """
-        if src_probs is not None:
-            src_emb = torch.matmul(src_probs, self.src_tok_emb.embedding.weight)
-            src_emb = src_emb * math.sqrt(self.config.d_model)
-            src_padding_mask = (src_probs.argmax(dim=-1) == self.config.pad_id).to(torch.bool)
-        else:
-            src_emb = self.src_tok_emb(src)
-            src_padding_mask = (src == self.config.pad_id).to(torch.bool)
+        src_emb = self.src_tok_emb(src)
+        src_padding_mask = (src == self.config.pad_id).to(torch.bool)
             
         src_emb = self.positional_encoding(src_emb)
         # If src_mask is provided (e.g. for specific attention patterns), ensure it's bool
@@ -581,7 +575,6 @@ class Seq2SeqTransformer(nn.Module):
         memory_key_padding_mask=None,
         tgt_is_causal=False,
         memory_is_causal=False,
-        tgt_probs=None,
     ):
         """
         Decode the target sequence using the encoded source.
@@ -595,16 +588,11 @@ class Seq2SeqTransformer(nn.Module):
             memory_key_padding_mask (torch.Tensor, optional): Padding mask for memory.
             tgt_is_causal (bool): Whether self-attention is causal.
             memory_is_causal (bool): Whether cross-attention is causal.
-            tgt_probs (torch.Tensor, optional): Soft target probabilities.
 
         Returns:
             torch.Tensor: Decoded features.
         """
-        if tgt_probs is not None:
-            tgt_emb = torch.matmul(tgt_probs, self.tgt_tok_emb.embedding.weight)
-            tgt_emb = tgt_emb * math.sqrt(self.config.d_model)
-        else:
-            tgt_emb = self.tgt_tok_emb(tgt)
+        tgt_emb = self.tgt_tok_emb(tgt)
             
         tgt_emb = self.positional_encoding(tgt_emb)
 
@@ -656,7 +644,7 @@ class Seq2SeqTransformer(nn.Module):
         """
         return self.generator(x)
 
-    def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0, src_probs=None):
+    def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0):
         """
         Single training step: encode, decode, and calculate loss.
 
@@ -665,7 +653,6 @@ class Seq2SeqTransformer(nn.Module):
             tgt (torch.Tensor): Target sequences (including BOS and EOS).
             return_outputs (bool): Whether to return logits and num_tokens. Defaults to False.
             label_smoothing (float): Label smoothing coefficient. Defaults to 0.0.
-            src_probs (torch.Tensor, optional): Soft source probabilities for differentiable cycle.
 
         Returns:
             If return_outputs is False:
@@ -677,12 +664,8 @@ class Seq2SeqTransformer(nn.Module):
         # tgt: (batch, tgt_len) - contains BOS and EOS
 
         # Create masks
-        if src_probs is not None:
-            src_padding_mask = (src_probs.argmax(dim=-1) == self.config.pad_id).to(torch.bool)
-            device = src_probs.device
-        else:
-            src_padding_mask = (src == self.config.pad_id).to(torch.bool)
-            device = src.device
+        src_padding_mask = (src == self.config.pad_id).to(torch.bool)
+        device = src.device
 
         # For training, we align input and target
         # Input to decoder: tgt[:, :-1] (BOS ... last_token)
@@ -694,7 +677,7 @@ class Seq2SeqTransformer(nn.Module):
         tgt_padding_mask = (tgt_input == self.config.pad_id).to(torch.bool)
 
         # 1. Encode
-        memory = self.encode(src=src, src_probs=src_probs)
+        memory = self.encode(src=src)
 
         # Causal mask for decoder autogression
         tgt_len = tgt_input.size(1)
@@ -740,42 +723,6 @@ class Seq2SeqTransformer(nn.Module):
                 reduction="sum",
             )
             return loss, num_tokens
-
-    def generate_gumbel(self, src, max_len=None, tau=1.0):
-        """
-        Differentiable greedy decoding using Gumbel-Softmax.
-        """
-        max_len = max_len or self.config.max_len
-        bos_id = self.config.bos_id
-        pad_id = self.config.pad_id
-        
-        bs = src.size(0)
-        device = src.device
-        
-        memory = self.encode(src=src)
-        src_padding_mask = (src == pad_id).to(torch.bool)
-        
-        ys_probs = torch.zeros(bs, 1, self.config.vocab_size_tgt, device=device)
-        ys_probs[:, 0, bos_id] = 1.0
-        
-        for i in range(max_len):
-            sz = ys_probs.size(1)
-            tgt_mask = torch.triu(torch.ones(sz, sz, device=device, dtype=torch.bool), diagonal=1)
-            
-            out = self.decode(
-                tgt=None, 
-                memory=memory, 
-                tgt_probs=ys_probs,
-                tgt_mask=tgt_mask, 
-                tgt_is_causal=True,
-                memory_key_padding_mask=src_padding_mask
-            )
-            
-            probs = self.project(out[:, -1])
-            gumbel_prob = torch.nn.functional.gumbel_softmax(probs, tau=tau, hard=True).unsqueeze(1)
-            ys_probs = torch.cat([ys_probs, gumbel_prob], dim=1)
-            
-        return ys_probs[:, 1:, :]
 
     @torch.no_grad()
     def generate(self, src, max_len=None, bos_id=None, eos_id=None, enc_output=None):

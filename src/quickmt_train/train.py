@@ -237,14 +237,7 @@ def _train_impl(
 
     model = Seq2SeqTransformer(model_cfg).to(device)
 
-    model_BA = None
-    if getattr(train_cfg, 'dual_learning_alpha', 0.0) > 0.0:
-        import copy
-        model_cfg_ba = copy.deepcopy(model_cfg)
-        model_cfg_ba.vocab_size_src = model_cfg.vocab_size_tgt
-        model_cfg_ba.vocab_size_tgt = model_cfg.vocab_size_src
-        model_BA = Seq2SeqTransformer(model_cfg_ba).to(device)
-        print(f"{get_time_info()} Initialized backward model for dual learning...")
+    # Point: model weights remain in FP32 (master weights) for Mixed Precision Training.
 
     # Point: model weights remain in FP32 (master weights) for Mixed Precision Training.
     load_model_weights(model, train_cfg, device, get_time_info)
@@ -286,14 +279,6 @@ def _train_impl(
             gradient_as_bucket_view=True,
             broadcast_buffers=False,
         )
-        if model_BA is not None:
-            model_BA = DDP(
-                model_BA,
-                device_ids=[local_rank],
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-                broadcast_buffers=False,
-            )
         if is_main:
             print(
                 f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
@@ -303,8 +288,6 @@ def _train_impl(
             f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
         )
         model = nn.DataParallel(model)
-        if model_BA is not None:
-             model_BA = nn.DataParallel(model_BA)
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
@@ -319,8 +302,6 @@ def _train_impl(
     no_decay_params = []
 
     models_list = [model]
-    if model_BA is not None:
-        models_list.append(model_BA)
 
     for current_model in models_list:
         for pn, p in current_model.named_parameters():
@@ -424,52 +405,9 @@ def _train_impl(
         )
 
         with torch.autocast(device_type=device.type, dtype=autocast_dtype):
-            if getattr(train_cfg, 'dual_learning_alpha', 0.0) > 0.0:
-                raw_m = model.module if hasattr(model, "module") else model
-                raw_mba = model_BA.module if hasattr(model_BA, "module") else model_BA
-
-                loss_AB, num_tokens = model(src, tgt, label_smoothing=train_cfg.label_smoothing)
-                loss_BA, _ = model_BA(tgt, src, label_smoothing=train_cfg.label_smoothing)
-                
-                if global_step >= getattr(train_cfg, 'dual_learning_warmup_steps', 0):
-                    soft_tgt = raw_m.generate_gumbel(src, max_len=tgt.size(1), tau=1.0)
-                    loss_cyc_1, _ = model_BA(src=None, src_probs=soft_tgt, tgt=src, label_smoothing=train_cfg.label_smoothing)
-                    
-                    soft_src = raw_mba.generate_gumbel(tgt, max_len=src.size(1), tau=1.0)
-                    loss_cyc_2, _ = model(src=None, src_probs=soft_src, tgt=tgt, label_smoothing=train_cfg.label_smoothing)
-                    
-                    loss = loss_AB + loss_BA + train_cfg.dual_learning_alpha * (loss_cyc_1 + loss_cyc_2)
-                else:
-                    loss = loss_AB + loss_BA
-
-            elif train_cfg.rdrop_alpha > 0.0 and global_step >= getattr(train_cfg, 'rdrop_warmup_steps', 0):
-                loss1, (logits1, num_tokens) = model(
-                    src, tgt, return_outputs=True, label_smoothing=train_cfg.label_smoothing
-                )
-                loss2, (logits2, _) = model(
-                    src, tgt, return_outputs=True, label_smoothing=train_cfg.label_smoothing
-                )
-
-                ce_loss = 0.5 * (loss1 + loss2)
-
-                # Compute KL divergence
-                p_loss = F.kl_div(F.log_softmax(logits1, dim=-1), F.softmax(logits2, dim=-1), reduction='none')
-                q_loss = F.kl_div(F.log_softmax(logits2, dim=-1), F.softmax(logits1, dim=-1), reduction='none')
-
-                p_loss = p_loss.sum(dim=-1)
-                q_loss = q_loss.sum(dim=-1)
-
-                pad_mask = (tgt[:, 1:] == model_cfg.pad_id)
-                p_loss.masked_fill_(pad_mask, 0.0)
-                q_loss.masked_fill_(pad_mask, 0.0)
-
-                kl_loss = (p_loss.sum() + q_loss.sum()) / 2
-
-                loss = ce_loss + train_cfg.rdrop_alpha * kl_loss
-            else:
-                loss, num_tokens = model(
-                    src, tgt, label_smoothing=train_cfg.label_smoothing
-                )
+            loss, num_tokens = model(
+                src, tgt, label_smoothing=train_cfg.label_smoothing
+            )
 
             # Handle DataParallel output (vectors per GPU)
             if loss.ndim > 0:
