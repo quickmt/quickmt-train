@@ -292,37 +292,6 @@ class StreamingTextDataset(IterableDataset):
         return src_padded, tgt_padded
 
 
-def collate_fn(batch):
-    """
-    Custom collate to pad to the max length *in this batch*.
-    Ensures length is a multiple of 16 for efficiency.
-    batch is list of (src_tensor, tgt_tensor)
-    """
-    srcs, tgts = zip(*batch)
-
-    # Pad sequences
-    src_padded = torch.nn.utils.rnn.pad_sequence(
-        list(srcs), batch_first=True, padding_value=0
-    )
-    tgt_padded = torch.nn.utils.rnn.pad_sequence(
-        list(tgts), batch_first=True, padding_value=0
-    )
-
-    # Pad to multiple of 16
-    def pad_to_multiple(tensor, multiple=16):
-        seq_len = tensor.size(1)
-        remainder = seq_len % multiple
-        if remainder != 0:
-            padding = multiple - remainder
-            tensor = torch.nn.functional.pad(tensor, (0, padding))
-        return tensor
-
-    src_padded = pad_to_multiple(src_padded)
-    tgt_padded = pad_to_multiple(tgt_padded)
-
-    return src_padded, tgt_padded
-
-
 def train_tokenizer(
     text_file: str,
     model_prefix: str,
