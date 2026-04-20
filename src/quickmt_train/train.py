@@ -761,7 +761,7 @@ def validate(
     data_cfg,
     model_cfg,
     get_time_info,
-    use_autoregressive=False,
+    use_autoregressive=True,
 ):
     """
     Validate the model.

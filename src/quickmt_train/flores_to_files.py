@@ -21,9 +21,6 @@ def flores_plus_to_files(src_lang: str, tgt_lang: str = "eng_Latn"):
         print(f"ERROR: Language {tgt_lang} or {src_lang} not found")
         raise
 
-    tgt_flores = load_dataset("openlanguagedata/flores_plus", tgt_lang, split="devtest")
-    src_flores = load_dataset("openlanguagedata/flores_plus", src_lang, split="devtest")
-
     tgt_filename = f"flores_plus_{tgt_lang}.txt"
     src_filename = f"flores_plus_{src_lang}.txt"
     print(f"Saving to {tgt_filename} and {src_filename}")

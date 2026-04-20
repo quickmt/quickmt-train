@@ -1,6 +1,6 @@
 
 train:
-  experiment_name: "isen-tiny-6"
+  experiment_name: "isen-tiny-1"
   lr: 2.0e-3
   accum_steps: 3
   warmup_steps: 5000
@@ -31,5 +31,5 @@ model:
   vocab_size_src: 10000
   vocab_size_tgt: 10000
   ff_bias: true
-  norm_type: str = "rmsnorm"
+  norm_type: "rmsnorm"
   mlp_type: "gated"

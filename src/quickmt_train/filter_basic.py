@@ -9,13 +9,11 @@ from sacremoses import MosesDetokenizer
 from itertools import islice
 
 try:
-    word_list = words.words()
+    eng_words = set(words.words())
 
-except:
+except Exception:
     nltk.download("words")
-    word_list = words.words()
-
-eng_words = set(words.words())
+    eng_words = set(words.words())
 
 # build a table mapping all non-printable characters to None
 NOPRINT_TRANS_TABLE = {
