@@ -709,13 +709,9 @@ def validate(
     total_tokens = 0
     correct_tokens = 0
 
-    # Limit samples for BLEU calculation to reduce memory
-    max_samples = train_cfg.val_max_samples
     hypotheses = []
     references = []
-    sample_count = 0
 
-    # Use inference_mode instead of no_grad for better performance
     autocast_dtype = torch.float32
     if device.type == "cuda":
         if train_cfg.precision in ("bf16", "bfloat16"):
@@ -730,60 +726,47 @@ def validate(
                 tgt.to(device, non_blocking=True),
             )
 
-            # Forward pass for loss and logits (calculates loss internally)
             with torch.autocast(device_type=device.type, dtype=autocast_dtype):
                 loss_sum, (logits, num_tokens_batch) = model(
                     src, tgt, return_outputs=True
                 )
 
-            # Handle DataParallel output (vectors per GPU)
             if loss_sum.ndim > 0:
                 loss_sum = loss_sum.sum()
             if num_tokens_batch.ndim > 0:
                 num_tokens_batch = num_tokens_batch.sum()
 
-            # Accumulate loss and tokens
             total_loss_sum += loss_sum.item()
             total_tokens += num_tokens_batch.item()
 
-            # Accuracy calculation
             tgt_labels = tgt[:, 1:]
             preds = logits.argmax(dim=-1)
             mask_acc = tgt_labels != model_cfg.pad_id
             correct_tokens += ((preds == tgt_labels) & mask_acc).sum().item()
 
-            # Generation for BLEU/ChrF - only process if we still need samples
-            if sample_count < max_samples:
-                if use_autoregressive:
-                    # True autoregressive generation including encoding
-                    raw_model = model.module if hasattr(model, "module") else model
-                    enc = raw_model.encode(src)
-                    generated_ids = raw_model.generate(
-                        src,
-                        max_len=model_cfg.max_len,
-                        enc_output=enc,
-                        bos_id=model_cfg.bos_id,
-                        eos_id=model_cfg.eos_id,
-                    )
-                else:
-                    # Teacher-forced predictions (fastest, uses existing logits)
-                    generated_ids = preds
+            if use_autoregressive:
+                raw_model = model.module if hasattr(model, "module") else model
+                enc = raw_model.encode(src)
+                generated_ids = raw_model.generate(
+                    src,
+                    max_len=model_cfg.max_len,
+                    enc_output=enc,
+                    bos_id=model_cfg.bos_id,
+                    eos_id=model_cfg.eos_id,
+                )
+            else:
+                generated_ids = preds
 
-                for i in range(src.size(0)):
-                    if sample_count >= max_samples:
+            for i in range(src.size(0)):
+                ids = generated_ids[i].tolist()
+                for idx, token_id in enumerate(ids):
+                    if token_id == model_cfg.eos_id or token_id == model_cfg.pad_id:
+                        ids = ids[:idx]
                         break
-                    # Post-process: stop at EOS or PAD tokens
-                    ids = generated_ids[i].tolist()
-                    # Find first EOS or PAD token and truncate
-                    for idx, token_id in enumerate(ids):
-                        if token_id == model_cfg.eos_id or token_id == model_cfg.pad_id:
-                            ids = ids[:idx]
-                            break
-                    hyp = tgt_sp.decode(ids)
-                    ref = tgt_sp.decode(tgt[i].tolist())
-                    hypotheses.append(hyp)
-                    references.append(ref)
-                    sample_count += 1
+                hyp = tgt_sp.decode(ids)
+                ref = tgt_sp.decode(tgt[i].tolist())
+                hypotheses.append(hyp)
+                references.append(ref)
 
     avg_loss = total_loss_sum / max(1, total_tokens)
     ppl = math.exp(min(avg_loss, 100))

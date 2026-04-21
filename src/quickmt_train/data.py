@@ -390,6 +390,40 @@ def load_file_lines(path, limit=None):
     return lines
 
 
+def prepare_dev_sample(src_dev_path, tgt_dev_path, experiment_name, val_max_samples):
+    os.makedirs(experiment_name, exist_ok=True)
+    sample_src_path = os.path.join(experiment_name, "dev_sample.src")
+    sample_tgt_path = os.path.join(experiment_name, "dev_sample.tgt")
+
+    if os.path.exists(sample_src_path) and os.path.exists(sample_tgt_path):
+        print(f"Dev sample files already exist, reusing: {sample_src_path}, {sample_tgt_path}")
+        return sample_src_path, sample_tgt_path
+
+    with open(src_dev_path, "r", encoding="utf-8") as f_src, \
+         open(tgt_dev_path, "r", encoding="utf-8") as f_tgt:
+        src_lines = f_src.readlines()
+        tgt_lines = f_tgt.readlines()
+
+    assert len(src_lines) == len(tgt_lines), \
+        f"Dev file line count mismatch: {src_dev_path} ({len(src_lines)}) vs {tgt_dev_path} ({len(tgt_lines)})"
+
+    if len(src_lines) <= val_max_samples:
+        print(f"Dev set ({len(src_lines)} lines) <= val_max_samples ({val_max_samples}), using full dev set")
+        return src_dev_path, tgt_dev_path
+
+    indices = random.sample(range(len(src_lines)), val_max_samples)
+    indices.sort()
+
+    with open(sample_src_path, "w", encoding="utf-8") as f_src, \
+         open(sample_tgt_path, "w", encoding="utf-8") as f_tgt:
+        for i in indices:
+            f_src.write(src_lines[i])
+            f_tgt.write(tgt_lines[i])
+
+    print(f"Wrote {val_max_samples} dev sample lines to {sample_src_path}, {sample_tgt_path}")
+    return sample_src_path, sample_tgt_path
+
+
 def PrepareData(
     model_cfg, data_cfg, train_cfg, global_step_value=None, rank=0, world_size=1
 ):
@@ -467,8 +501,14 @@ def PrepareData(
         world_size=world_size,
     )
 
+    dev_src_path, dev_tgt_path = prepare_dev_sample(
+        data_cfg.src_dev_path,
+        data_cfg.tgt_dev_path,
+        data_cfg.experiment_name,
+        train_cfg.val_max_samples,
+    )
     dev_corpora = [
-        CorpusConfig(src_file=data_cfg.src_dev_path, tgt_file=data_cfg.tgt_dev_path)
+        CorpusConfig(src_file=dev_src_path, tgt_file=dev_tgt_path)
     ]
     dev_dataset = StreamingTextDataset(
         dev_corpora,
