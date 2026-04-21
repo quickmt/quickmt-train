@@ -1,5 +1,48 @@
 from dataclasses import dataclass, fields
+from enum import Enum
 import os
+
+
+class StrEnum(str, Enum):
+    pass
+
+class ActivationType(StrEnum):
+    GELU = "gelu"
+    RELU = "relu"
+    SWIGLU = "swiglu"
+    SILU = "silu"
+
+class MLPType(StrEnum):
+    STANDARD = "standard"
+    GATED = "gated"
+
+class NormType(StrEnum):
+    LAYERNORM = "layernorm"
+    RMSNORM = "rmsnorm"
+
+class SchedulerType(StrEnum):
+    INV_SQRT = "inv_sqrt"
+    COSINE = "cosine"
+
+class DeviceType(StrEnum):
+    CUDA = "cuda"
+    CPU = "cpu"
+    AUTO = "auto"
+
+class PrecisionType(StrEnum):
+    BF16 = "bf16"
+    BFLOAT16 = "bfloat16"
+    FP16 = "fp16"
+    FLOAT16 = "float16"
+    FP32 = "fp32"
+    FLOAT32 = "float32"
+
+class QuantizationType(StrEnum):
+    INT8 = "int8"
+    INT16 = "int16"
+    FLOAT16 = "float16"
+    BFLOAT16 = "bfloat16"
+    NONE = "none"
 
 
 @dataclass
@@ -19,9 +62,9 @@ class ModelConfig:
     use_checkpoint: bool = False
     ff_bias: bool = True
     layernorm_eps: float = 1e-6
-    activation: str = "gelu"
-    mlp_type: str = "standard"  # "standard" or "gated"
-    norm_type: str = "layernorm"  # "layernorm" or "rmsnorm"
+    activation: ActivationType = ActivationType.GELU
+    mlp_type: MLPType = MLPType.STANDARD  # "standard" or "gated"
+    norm_type: NormType = NormType.LAYERNORM  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
 
     # Special Tokens
@@ -103,7 +146,7 @@ class TrainConfig:
     adam_beta2: float = 0.998
 
     # Scheduler
-    scheduler_type: str = "inv_sqrt"  # "inv_sqrt" or "cosine"
+    scheduler_type: SchedulerType = SchedulerType.INV_SQRT  # "inv_sqrt" or "cosine"
     warmup_steps: int = 5000
     max_steps: int = 100000
     epochs: int = 20
@@ -116,8 +159,8 @@ class TrainConfig:
     save_checkpoints: bool = True
 
     # Hardware & Performance
-    device: str = "cuda"  # "cuda", "cpu", or "auto"
-    precision: str = "bf16"  # "bf16", "fp16", "fp32"
+    device: DeviceType = DeviceType.CUDA  # "cuda", "cpu", or "auto"
+    precision: PrecisionType = PrecisionType.BF16  # "bf16", "fp16", "fp32"
     tf32: bool = True
 
     # Logging & Validation
@@ -145,7 +188,7 @@ class ExportConfig:
     k: int = 5
 
     # Quantization
-    quantization: str = "int8"
+    quantization: QuantizationType = QuantizationType.INT8
 
     # Inference Defaults
     beam_size: int = 5
@@ -177,14 +220,23 @@ class ExportConfig:
 
 
 def _from_dict(cls, d):
-    valid_fields = {f.name for f in fields(cls)}
+    valid_fields = {f.name: f.type for f in fields(cls)}
     kwargs = {}
     for k, v in d.items():
-        if k in valid_fields:
-            if k == "corpora" and isinstance(v, list):
-                kwargs[k] = [CorpusConfig(**c) if isinstance(c, dict) else c for c in v]
-            else:
-                kwargs[k] = v
+        if k not in valid_fields:
+            raise ValueError(f"Invalid key '{k}' for config {cls.__name__}")
+            
+        field_type = valid_fields[k]
+        if k == "corpora" and isinstance(v, list):
+            kwargs[k] = [CorpusConfig(**c) if isinstance(c, dict) else c for c in v]
+        elif isinstance(field_type, type) and issubclass(field_type, Enum):
+            try:
+                kwargs[k] = field_type(v)
+            except ValueError:
+                valid_vals = [e.value for e in field_type]
+                raise ValueError(f"Invalid value '{v}' for {k} in {cls.__name__}. Expected one of {valid_vals}")
+        else:
+            kwargs[k] = v
     return cls(**kwargs)
 
 
@@ -196,6 +248,11 @@ def load_config(path: str):
 
     if cfg is None:
         cfg = {}
+
+    valid_top_level = {"model", "data", "train", "export"}
+    for k in cfg.keys():
+        if k not in valid_top_level:
+            raise ValueError(f"Invalid top-level section '{k}' in config file. Expected one of {valid_top_level}")
 
     model_config = _from_dict(ModelConfig, cfg.get("model", {}))
     data_config = _from_dict(DataConfig, cfg.get("data", {}))

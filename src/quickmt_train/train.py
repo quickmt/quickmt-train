@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 try:
     import torch._inductor.config as inductor_config
@@ -208,10 +208,20 @@ def _train_impl(
     import dataclasses
 
     if run and is_main:
+        from enum import Enum
+        def serialize_val(v):
+            if isinstance(v, Enum):
+                return v.value
+            if isinstance(v, list):
+                return [serialize_val(i) for i in v]
+            if isinstance(v, dict):
+                return {k: serialize_val(i) for k, i in v.items()}
+            return v
+
         run["hparams"] = {
-            **{f"model_{k}": v for k, v in dataclasses.asdict(model_cfg).items()},
-            **{f"data_{k}": v for k, v in dataclasses.asdict(data_cfg).items()},
-            **{f"train_{k}": v for k, v in dataclasses.asdict(train_cfg).items()},
+            **{f"model_{k}": serialize_val(v) for k, v in dataclasses.asdict(model_cfg).items()},
+            **{f"data_{k}": serialize_val(v) for k, v in dataclasses.asdict(data_cfg).items()},
+            **{f"train_{k}": serialize_val(v) for k, v in dataclasses.asdict(train_cfg).items()},
         }
 
     # Data
@@ -872,13 +882,21 @@ def train_cli(config: str, **kwargs):
 
     # Apply overrides
     for key, value in kwargs.items():
-        if hasattr(train_cfg, key):
-            setattr(train_cfg, key, value)
-        elif hasattr(model_cfg, key):
-            setattr(model_cfg, key, value)
-        elif hasattr(data_cfg, key):
-            setattr(data_cfg, key, value)
-        else:
+        applied = False
+        for cfg in [train_cfg, model_cfg, data_cfg]:
+            if hasattr(cfg, key):
+                from enum import Enum
+                existing_val = getattr(cfg, key)
+                if isinstance(existing_val, Enum):
+                    try:
+                        value = type(existing_val)(value)
+                    except ValueError:
+                        valid_vals = [e.value for e in type(existing_val)]
+                        raise ValueError(f"Invalid value '{value}' for {key}. Expected one of {valid_vals}")
+                setattr(cfg, key, value)
+                applied = True
+                break
+        if not applied:
             print(f"Warning: Configuration key '{key}' not found in any config object.")
 
     # Make experiment folder if not exists
