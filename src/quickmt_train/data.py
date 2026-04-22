@@ -435,41 +435,96 @@ def PrepareData(
     model_prefix_src = data_cfg.tokenizer_prefix_src
     model_prefix_tgt = data_cfg.tokenizer_prefix_tgt
 
+    if model_cfg.joint_vocab:
+        vocab_size_src = vocab_size_tgt = max(vocab_size_src, vocab_size_tgt)
+        model_prefix_src = model_prefix_tgt = os.path.join(data_cfg.experiment_name, "tokenizer_joint")
+        
+        # If joint tokenizer needed
+        if not os.path.exists(f"{model_prefix_src}.model"):
+            print("Training Joint Tokenizer...")
+            joint_file = os.path.join(data_cfg.experiment_name, "joint_corpus.txt")
+            
+            import random
+            # Determine total files to sample from
+            files_to_sample = [c.src_file for c in data_cfg.corpora] + [c.tgt_file for c in data_cfg.corpora]
+            files_to_sample = [f for f in files_to_sample if os.path.exists(f)]
+            
+            if not files_to_sample:
+                raise FileNotFoundError("No corpus files found for tokenizer training")
+
+            # Calculate lines per file to ensure total sample size matches
+            target_total_lines = data_cfg.input_sentence_size
+            lines_per_file = target_total_lines // len(files_to_sample)
+            
+            with open(joint_file, "w", encoding="utf-8") as f_out:
+                for f_path in files_to_sample:
+                    with open(f_path, "r", encoding="utf-8") as f_in:
+                        # Reservoir sampling for random sample without loading full file
+                        reservoir = []
+                        for i, line in enumerate(f_in):
+                            if i < lines_per_file:
+                                reservoir.append(line)
+                            else:
+                                j = random.randint(0, i)
+                                if j < lines_per_file:
+                                    reservoir[j] = line
+                        
+                        for line in reservoir:
+                            f_out.write(line)
+            
+            train_tokenizer(
+                joint_file,
+                model_prefix_src,
+                vocab_size_src,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
+            # Link to tgt
+            if not os.path.exists(f"{data_cfg.tokenizer_prefix_tgt}.model"):
+                import shutil
+                shutil.copy(f"{model_prefix_src}.model", f"{data_cfg.tokenizer_prefix_tgt}.model")
+                shutil.copy(f"{model_prefix_src}.vocab", f"{data_cfg.tokenizer_prefix_tgt}.vocab")
+
     os.makedirs(data_cfg.experiment_name, exist_ok=True)
 
     if not data_cfg.corpora:
         raise ValueError("No corpora provided in data_cfg")
 
-    tokenizer_train_src = data_cfg.corpora[0].src_file
-    tokenizer_train_tgt = data_cfg.corpora[0].tgt_file
+    if not model_cfg.joint_vocab:
+        tokenizer_train_src = data_cfg.corpora[0].src_file
+        tokenizer_train_tgt = data_cfg.corpora[0].tgt_file
 
-    if not os.path.exists(f"{model_prefix_src}.model"):
-        print("Training Source Tokenizer...")
-        train_tokenizer(
-            tokenizer_train_src,
-            model_prefix_src,
-            vocab_size_src,
-            char_coverage=data_cfg.char_coverage,
-            input_sentence_size=data_cfg.input_sentence_size,
-            pad_id=model_cfg.pad_id,
-            unk_id=model_cfg.unk_id,
-            bos_id=model_cfg.bos_id,
-            eos_id=model_cfg.eos_id,
-        )
+        if not os.path.exists(f"{model_prefix_src}.model"):
+            print("Training Source Tokenizer...")
+            train_tokenizer(
+                tokenizer_train_src,
+                model_prefix_src,
+                vocab_size_src,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
 
-    if not os.path.exists(f"{model_prefix_tgt}.model"):
-        print("Training Target Tokenizer...")
-        train_tokenizer(
-            tokenizer_train_tgt,
-            model_prefix_tgt,
-            vocab_size_tgt,
-            char_coverage=data_cfg.char_coverage,
-            input_sentence_size=data_cfg.input_sentence_size,
-            pad_id=model_cfg.pad_id,
-            unk_id=model_cfg.unk_id,
-            bos_id=model_cfg.bos_id,
-            eos_id=model_cfg.eos_id,
-        )
+        if not os.path.exists(f"{model_prefix_tgt}.model"):
+            print("Training Target Tokenizer...")
+            train_tokenizer(
+                tokenizer_train_tgt,
+                model_prefix_tgt,
+                vocab_size_tgt,
+                char_coverage=data_cfg.char_coverage,
+                input_sentence_size=data_cfg.input_sentence_size,
+                pad_id=model_cfg.pad_id,
+                unk_id=model_cfg.unk_id,
+                bos_id=model_cfg.bos_id,
+                eos_id=model_cfg.eos_id,
+            )
 
     # 2. Load Tokenizers
     src_sp, tgt_sp = load_tokenizers(

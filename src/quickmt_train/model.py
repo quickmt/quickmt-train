@@ -442,6 +442,10 @@ class Seq2SeqTransformer(nn.Module):
         self.tgt_tok_emb = TokenEmbedding(
             config.vocab_size_tgt, config.d_model, padding_idx=config.pad_id
         )
+        if config.joint_vocab:
+            # Share embedding weights if joint vocabulary is used
+            self.src_tok_emb.embedding.weight = self.tgt_tok_emb.embedding.weight
+        
         self.positional_encoding = PositionalEncoding(
             config.d_model, dropout=config.dropout, max_len=config.max_len
         )
@@ -488,7 +492,7 @@ class Seq2SeqTransformer(nn.Module):
 
         # Always use bias for the generator
         self.generator = nn.Linear(config.d_model, config.vocab_size_tgt, bias=True)
-        if config.tie_decoder_embeddings:
+        if config.tie_decoder_embeddings or config.joint_vocab:
             self.generator.weight = self.tgt_tok_emb.embedding.weight
 
         # Initialize parameters
@@ -505,7 +509,7 @@ class Seq2SeqTransformer(nn.Module):
         if isinstance(module, nn.Linear):
             # If weights are tied, the generator weight is just a pointer to embeddings.
             # We skip re-initializing it here to preserve the embedding stats.
-            if not (self.config.tie_decoder_embeddings and module is self.generator):
+            if not ((self.config.tie_decoder_embeddings or self.config.joint_vocab) and module is self.generator):
                 nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
@@ -703,7 +707,7 @@ class Seq2SeqTransformer(nn.Module):
         if return_outputs:
             logits = self.project(outs)
             loss = nn.functional.cross_entropy(
-                logits.reshape(-1, self.config.vocab_size_tgt),
+                logits.reshape(-1, self.generator.out_features),
                 tgt_out.reshape(-1),
                 ignore_index=self.config.pad_id,
                 label_smoothing=label_smoothing,
@@ -827,7 +831,7 @@ class Seq2SeqTransformer(nn.Module):
         # inputs: (bs, beam_size, seq_len)
         inputs = torch.full((bs, beam_size, 1), bos_id, dtype=torch.long, device=device)
 
-        vocab_size = self.config.vocab_size_tgt
+        vocab_size = self.generator.out_features
 
         for i in range(max_len):
             curr_seq_len = inputs.size(2)

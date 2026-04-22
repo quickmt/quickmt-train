@@ -66,6 +66,7 @@ class ModelConfig:
     mlp_type: MLPType = MLPType.STANDARD  # "standard" or "gated"
     norm_type: NormType = NormType.LAYERNORM  # "layernorm" or "rmsnorm"
     tie_decoder_embeddings: bool = False
+    joint_vocab: bool = False
 
     # Special Tokens
     pad_id: int = 0
@@ -106,6 +107,7 @@ class DataConfig:
     # Tokenizer
     char_coverage: float = 0.9999
     input_sentence_size: int = 10_000_000
+    train_joint_tokenizer: bool = False
 
     @property
     def tokenizer_prefix_src(self) -> str:

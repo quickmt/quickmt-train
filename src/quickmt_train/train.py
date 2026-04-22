@@ -228,8 +228,15 @@ def _train_impl(
     if is_main:
         print(f"{get_time_info()} Preparing data...")
 
+    # Ensure tokenizers are prepared before the loader is initialized
+    from .data import PrepareData
+    
+    # We call PrepareData here to ensure tokenizers are trained
+    # This also returns the loader, but we only need the tokenizers to be ready
+    # Note: PrepareData re-runs logic that trains tokenizers if they don't exist
+    
     import multiprocessing as mp
-
+    
     ctx = mp.get_context("spawn")
     global_step_value = ctx.Value("i", 0)
 

@@ -264,7 +264,7 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
 
     is_gated = getattr(model_cfg, "mlp_type", "standard") == "gated"
     use_rms_norm = getattr(model_cfg, "norm_type", "layernorm") == "rmsnorm"
-    tie_decoder_embeddings = getattr(model_cfg, "tie_decoder_embeddings", False)
+    tie_decoder_embeddings = getattr(model_cfg, "tie_decoder_embeddings", False) or getattr(model_cfg, "joint_vocab", False)
 
     enc_kwargs = dict(
         num_layers=model_cfg.enc_layers,
@@ -438,12 +438,19 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     spec.config.add_source_eos = export_cfg.add_source_eos  # type: ignore
 
     # Register vocabularies
-    spec.register_source_vocabulary(
-        convert_vocab(f"{data_cfg.tokenizer_prefix_src}.vocab")
-    )
-    spec.register_target_vocabulary(
-        convert_vocab(f"{data_cfg.tokenizer_prefix_tgt}.vocab")
-    )
+    if model_cfg.joint_vocab:
+        # For joint vocab, the tokenizer is named 'tokenizer_joint' as per data.py
+        vocab_path = os.path.join(data_cfg.experiment_name, "tokenizer_joint.vocab")
+        vocab = convert_vocab(vocab_path)
+        spec.register_source_vocabulary(vocab)
+        spec.register_target_vocabulary(vocab)
+    else:
+        spec.register_source_vocabulary(
+            convert_vocab(f"{data_cfg.tokenizer_prefix_src}.vocab")
+        )
+        spec.register_target_vocabulary(
+            convert_vocab(f"{data_cfg.tokenizer_prefix_tgt}.vocab")
+        )
 
     spec.validate()
     spec.optimize(quantization=export_cfg.quantization)
@@ -451,14 +458,22 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
     print(f"Model saved to {export_cfg.output_dir}")
 
     # Copy Tokenizers to output directory
-    shutil.copy(
-        f"{data_cfg.tokenizer_prefix_src}.model",
-        Path(export_cfg.output_dir) / "src.spm.model",
-    )
-    shutil.copy(
-        f"{data_cfg.tokenizer_prefix_tgt}.model",
-        Path(export_cfg.output_dir) / "tgt.spm.model",
-    )
+    if model_cfg.joint_vocab:
+        # Use the explicit path created in data.py: experiment_dir / "tokenizer_joint.model"
+        tokenizer_model = os.path.join(data_cfg.experiment_name, "tokenizer_joint.model")
+        shutil.copy(
+            tokenizer_model,
+            Path(export_cfg.output_dir) / "joint.spm.model",
+        )
+    else:
+        shutil.copy(
+            f"{data_cfg.tokenizer_prefix_src}.model",
+            Path(export_cfg.output_dir) / "src.spm.model",
+        )
+        shutil.copy(
+            f"{data_cfg.tokenizer_prefix_tgt}.model",
+            Path(export_cfg.output_dir) / "tgt.spm.model",
+        )
 
 
 def main():
