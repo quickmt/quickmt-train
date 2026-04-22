@@ -299,7 +299,8 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
             if hasattr(src_emb, "detach")
             else src_emb.numpy()
         )
-
+    # Ensure decoder embeddings are set, even if shared with encoder in the PyTorch model
+    # CTranslate2 specs often require explicit assignment
     tgt_emb = state_dict.get("tgt_tok_emb.embedding.weight")
     if tgt_emb is None and tie_decoder_embeddings:
         tgt_emb = state_dict.get("generator.weight")
@@ -310,6 +311,12 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
             if hasattr(tgt_emb, "detach")
             else tgt_emb.numpy()
         )
+    
+    # If shared (like in some architectures), ensure both are populated
+    if tie_decoder_embeddings and encoder_spec.embeddings[0].weight is None:
+        encoder_spec.embeddings[0].weight = decoder_spec.embeddings.weight
+    if tie_decoder_embeddings and decoder_spec.embeddings.weight is None:
+        decoder_spec.embeddings.weight = encoder_spec.embeddings[0].weight
 
     # Position Encodings
     pe_tensor = state_dict.get("positional_encoding.pe")
@@ -329,10 +336,13 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
         if gen_bias is not None:
             decoder_spec.projection.bias = gen_bias
         else:
+            # Fallback for missing generator bias: use zeroes
+            # Need shape from embeddings weight if available
             decoder_spec.projection.bias = np.zeros(
                 decoder_spec.embeddings.weight.shape[0], dtype=np.float32
             )
     else:
+        # For non-tied, make sure generator weight is set
         set_linear(decoder_spec.projection, state_dict, "generator")
 
     # 4. Encoder Layers
