@@ -265,14 +265,9 @@ class EncoderLayer(nn.Module):
         n_kv_heads=None,
     ):
         super().__init__()
-        if n_kv_heads is not None and n_kv_heads != nhead:
-            self.self_attn = GroupedQueryAttention(
-                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
-            )
-        else:
-            self.self_attn = nn.MultiheadAttention(
-                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-            )
+        self.self_attn = GroupedQueryAttention(
+            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+        )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -340,20 +335,12 @@ class DecoderLayer(nn.Module):
         n_kv_heads=None,
     ):
         super().__init__()
-        if n_kv_heads is not None and n_kv_heads != nhead:
-            self.self_attn = GroupedQueryAttention(
-                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
-            )
-            self.multihead_attn = GroupedQueryAttention(
-                d_model, nhead, n_kv_heads, dropout=dropout, bias=bias, batch_first=True
-            )
-        else:
-            self.self_attn = nn.MultiheadAttention(
-                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-            )
-            self.multihead_attn = nn.MultiheadAttention(
-                d_model, nhead, dropout=dropout, batch_first=True, bias=bias
-            )
+        self.self_attn = GroupedQueryAttention(
+            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+        )
+        self.multihead_attn = GroupedQueryAttention(
+            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+        )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
         self.norm2 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -694,9 +681,9 @@ class Seq2SeqTransformer(nn.Module):
         outs = self.decode(
             tgt_input,
             memory,
-            tgt_mask=tgt_mask,
+            tgt_mask=None,
             tgt_is_causal=True,
-            tgt_key_padding_mask=tgt_padding_mask,
+            tgt_key_padding_mask=None,
             memory_key_padding_mask=src_padding_mask,
         )
 
@@ -769,7 +756,7 @@ class Seq2SeqTransformer(nn.Module):
             out = self.decode(
                 ys,
                 memory,
-                tgt_mask=tgt_mask,
+                tgt_mask=None,
                 tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
@@ -845,7 +832,7 @@ class Seq2SeqTransformer(nn.Module):
             out = self.decode(
                 flat_inputs,
                 memory,
-                tgt_mask=tgt_mask,
+                tgt_mask=None,
                 tgt_is_causal=True,
                 memory_key_padding_mask=src_padding_mask,
             )
