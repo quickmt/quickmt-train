@@ -331,18 +331,22 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
 
     # Generator (Projection)
     if tie_decoder_embeddings:
-        decoder_spec.projection.weight = decoder_spec.embeddings.weight
+        # If tied, projection is just a reuse of embeddings; we must ensure
+        # that embeddings are already populated.
+        if decoder_spec.embeddings.weight is not None:
+             decoder_spec.projection.weight = decoder_spec.embeddings.weight
+        
         _, gen_bias = get_layer_weights(state_dict, "generator")
         if gen_bias is not None:
             decoder_spec.projection.bias = gen_bias
         else:
             # Fallback for missing generator bias: use zeroes
-            # Need shape from embeddings weight if available
-            decoder_spec.projection.bias = np.zeros(
-                decoder_spec.embeddings.weight.shape[0], dtype=np.float32
-            )
+            if decoder_spec.embeddings.weight is not None:
+                decoder_spec.projection.bias = np.zeros(
+                    decoder_spec.embeddings.weight.shape[0], dtype=np.float32
+                )
     else:
-        # For non-tied, make sure generator weight is set
+        # Use set_linear for standard non-tied generator
         set_linear(decoder_spec.projection, state_dict, "generator")
 
     # 4. Encoder Layers
