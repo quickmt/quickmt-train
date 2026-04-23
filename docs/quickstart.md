@@ -42,53 +42,26 @@ hf auth login
 # Download training and validation data
 quickmt-dataset-to-files quickmt/quickmt-train.is-en is en
 quickmt-dataset-to-files quickmt/quickmt-valid.is-en is en
+
+# Also download synthetic finetranslations data from https://huggingface.co/datasets/HuggingFaceFW/finetranslations
+quickmt-finetranslations-download isl_Latn
 ```
 
-This will download four files into your current directory:
+This will download six files into your current directory:
 
 * quickmt-train.is-en.is
 * quickmt-train.is-en.en
 * quickmt-valid.is-en.is
 * quickmt-valid.is-en.en
+* finetranslations.ukr_Cyrl-eng_Latn.ukr_Cyrl
+* finetranslations.ukr_Cyrl-eng_Latn.eng_Latn
 
+## 2 - Create or Modify Config File
 
-## 2 - Create Config File
+We will use the config file "configs/isen-tiny-1.yaml". Take a look at it:
 
-Now we will need to create a configuration file. Copy the following into a file named "isen-tiny-1.yaml":
-
-```yaml
-
-train:
-  experiment_name: "isen-tiny-1"
-  lr: 1.0e-3
-  accum_steps: 6
-  warmup_steps: 5000
-  max_steps: 20000
-  eval_steps: 1000
-  max_checkpoints: 10
-  precision: "bfloat16" # or float16 with an older GPU
-  enable_torch_compile: true 
-
-data:
-  src_lang: "is"
-  tgt_lang: "en"
-  src_dev_path: "quickmt-valid.is-en.is"
-  tgt_dev_path: "quickmt-valid.is-en.en"
-  input_sentence_size: 1000000 # increase for better (but slower) tokenizer training 
-  max_tokens_per_batch: 20000 # tune this value for your GPU memory
-  corpora: 
-    - src_file: "quickmt-train.is-en.is"
-      tgt_file: "quickmt-train.is-en.en"
-
-model:
-  d_model: 384
-  enc_layers: 6
-  dec_layers: 2
-  n_heads: 4
-  ffn_dim: 1536
-  max_len: 256
-  vocab_size_src: 12000
-  vocab_size_tgt: 12000
+```bash
+cat configs/isen-tiny-1.yaml
 ```
 
 For all available configuration options, see [`config.py`](https://github.com/quickmt/quickmt-train/blob/main/src/quickmt_train/config.py) or the [Configuration Reference](https://quickmt.github.io/quickmt-train/reference/config).
@@ -106,6 +79,7 @@ The "tiny" configuration above creates a lightweight model suitable for experime
 
 If you get an out of memory error, decrease `max_tokens_per_batch` until your batches fit within your GPU memory limits.
 
+
 ### Understanding Batch Size
 
 The **effective batch size** in tokens is calculated as:
@@ -121,37 +95,37 @@ For this config: `6 × 20000 = 120,000` tokens per optimization step.
 
 Gradient accumulation allows simulating larger batch sizes without additional GPU memory.
 
+
 ## 3 - Train
 
 Next we train our model!
 
 ```bash
-quickmt-train --config isen-tiny-1.yaml
+quickmt-train configs/isen-tiny-1.yaml
 ```
-
 
 During training, the following will be created in your experiment directory (`./isen-tiny-1/`):
 
 - `checkpoints/` - Model checkpoints saved every `eval_steps` iterations
-- `tokenizer_src.model` / `tokenizer_tgt.model` - Trained SentencePiece tokenizers
+- `tokenizer_src.model`, `tokenizer_tgt.model` - Trained SentencePiece tokenizers
 - `aim-runs/` - Experiment tracking data (if using aim)
 
 Training progress is logged to the console. You can monitor GPU utilization with `nvidia-smi` in a separate terminal.
 
 ### Troubleshooting
 
-Out of Memory (OOM) Errors
+**Out of Memory (OOM) Errors**
 
 - Decrease `max_tokens_per_batch` (try 10000, then 5000)
-- Reduce `max_len` in model config
-- Disable `torch.compile` temporarily
+  - Also proportionally increase `accum_steps` to keep the effective batch size the same
+- Reduce `max_len` in the model config
 
-Slow Training
+**Slow Training**
 
-- Ensure `enable_torch_compile: true` (first run is slow due to compilation)
 - Increase `max_tokens_per_batch` if memory allows
-- Check GPU utilization with `nvidia-smi`
-- Buy or rent a faster GPU 
+  - Check GPU utilization with `nvidia-smi`
+- Buy (or rent) a faster GPU 
+- Ensure `enable_torch_compile: true` (first few steps are slow due to compilation)
 
 
 ## 4 - Model Export
@@ -168,11 +142,11 @@ quickmt-export --experiment_dir ./isen-tiny-1
 
 ```bash
 # Download Flores Data
-# NOTE: You will need to log in to Huggingface
-# And accept the flores-plus terms of use: https://huggingface.co/datasets/openlanguagedata/flores_plus
+# NOTE: You will need to log in to Huggingface nd accept the flores-plus 
+# terms of use: https://huggingface.co/datasets/openlanguagedata/flores_plus
 quickmt-flores-download isl_Latn eng_Latn
 
-# Evaluate (uses quickmt library, https://github.com/quickmt/quickmt)
+# Evaluate using the quickmt library: https://github.com/quickmt/quickmt
 quickmt-eval --src_file flores_plus_isl_Latn.txt --ref_file flores_plus_eng_Latn.txt --device cpu --batch_size 32 --beam_size 5 --model ./isen-tiny-1/exported_model
 ```
 

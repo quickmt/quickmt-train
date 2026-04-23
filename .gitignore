@@ -240,3 +240,4 @@ quickmt-train*
 quickmt-valid*
 isen*
 src/quickmt_train/evaluate_ollama.py
+finetranslations*

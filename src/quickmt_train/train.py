@@ -405,7 +405,7 @@ def _train_impl(
     clipping_count = 0  # Count of clipping events since last log
     latest_val_metrics = None
 
-    for batch_idx, (src, tgt) in enumerate(train_loader):
+    for batch_idx, (src, tgt) in enumerate(train_loader, start=1):
         # Use non_blocking for async data transfer
         src, tgt = (
             src.to(device, non_blocking=True),
