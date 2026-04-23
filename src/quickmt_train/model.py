@@ -677,7 +677,7 @@ class Seq2SeqTransformer(nn.Module):
             diagonal=1,
         )
 
-        # 2. Decode using native causal flag AND explicit mask to fix torch.compile compatibility
+        # 2. Decode using native causal flag and explicit mask for torch.compile compatibility
         outs = self.decode(
             tgt_input,
             memory,

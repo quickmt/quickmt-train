@@ -224,16 +224,10 @@ def _train_impl(
             **{f"train_{k}": serialize_val(v) for k, v in dataclasses.asdict(train_cfg).items()},
         }
 
-    # Data
-    if is_main:
-        print(f"{get_time_info()} Preparing data...")
-
-    # Ensure tokenizers are prepared before the loader is initialized
+    # Tokenizer preparation
     from .data import PrepareData
     
-    # We call PrepareData here to ensure tokenizers are trained
-    # This also returns the loader, but we only need the tokenizers to be ready
-    # Note: PrepareData re-runs logic that trains tokenizers if they don't exist
+    # We call PrepareData here to ensure tokenizers are trained if they don't exist
     
     import multiprocessing as mp
     
@@ -254,9 +248,7 @@ def _train_impl(
 
     model = Seq2SeqTransformer(model_cfg).to(device)
 
-    # Point: model weights remain in FP32 (master weights) for Mixed Precision Training.
-
-    # Point: model weights remain in FP32 (master weights) for Mixed Precision Training.
+    # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
     # NOTE: torch.compile is disabled for multi-GPU DDP runs.
@@ -310,8 +302,7 @@ def _train_impl(
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
 
     # Separate parameters into two groups: those that will receive weight decay and those that will not.
-    # Modern Transformer training (BERT, GPT-2, etc.) excludes biases and normalization/embedding
-    # parameters from weight decay to improve stability and avoid underfitting.
+    # Biases and normalization/embedding parameters are typically excluded from weight decay.
 
     # We want to decay: Weight of Linear layers (2D+)
     # We do NOT want to decay: Bias of anything, Weight of Norm/Embedding layers
@@ -432,8 +423,7 @@ def _train_impl(
             if num_tokens.ndim > 0:
                 num_tokens = num_tokens.sum()
 
-        # In DDP, backward() syncs gradients across all GPUs.
-        # Use no_sync context to only sync at the end of accumulation.
+        # Backward pass with optional gradient synchronization
         if world_size > 1 and (batch_idx + 1) % train_cfg.accum_steps != 0:
             context = model.no_sync()
         else:
@@ -498,7 +488,7 @@ def _train_impl(
 
             # Validation and Checkpointing
             # Run validate() on ALL ranks (DDP requires all ranks to participate
-            # in the forward pass). Only rank 0 logs metrics and saves checkpoints.
+            # in the forward pass). Only rank 0 saves checkpoints.
             if global_step % train_cfg.eval_steps == 0:
                 val_metrics = validate(
                     model,

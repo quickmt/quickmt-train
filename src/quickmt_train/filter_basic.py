@@ -24,14 +24,13 @@ detok = MosesDetokenizer(lang="en")
 
 
 def batch(iterable, n):
-    "Batch data into lists of length n. The last batch may be shorter."
-    # batched('ABCDEFG', 3) --> ABC DEF G
+    """Batch data into lists of length n. The last batch may be shorter."""
     it = iter(iterable)
     while True:
-        batch = tuple(islice(it, n))
-        if not batch:
+        batch_items = tuple(islice(it, n))
+        if not batch_items:
             return
-        yield batch
+        yield batch_items
 
 
 def fasttext_lang_match(

@@ -51,9 +51,6 @@ conda create -n quickmt-train python=3.12 pip
 conda activate quickmt-train
 git clone https://github.com/quickmt/quickmt-train.git
 pip install -e ./quickmt-train/
-
-# Torch compile requires torch 2.7.1
-pip install torch==2.7.1
 ```
 
 

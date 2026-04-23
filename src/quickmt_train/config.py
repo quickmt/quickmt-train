@@ -263,8 +263,6 @@ def load_config(path: str):
 
     # Link experiment name across configs
     export_config.experiment_name = train_config.experiment_name
-
-    # Link experiment name across configs
     data_config.experiment_name = train_config.experiment_name
 
     return model_config, data_config, train_config, export_config

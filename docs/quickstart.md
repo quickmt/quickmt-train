@@ -29,9 +29,6 @@ pip install -e ./quickmt-train[track]
 
 # To install optuna (for hyperparameter optimization)
 pip install -e ./quickmt-train[optimize]
-
-# It may be necessary to downgrade torch to 2.7.1 for torch.compile to work
-pip install torch==2.7.1
 ```
 
 ## 1 - Downloading Data
@@ -148,11 +145,6 @@ Out of Memory (OOM) Errors
 - Decrease `max_tokens_per_batch` (try 10000, then 5000)
 - Reduce `max_len` in model config
 - Disable `torch.compile` temporarily
-
-`torch.compile` Errors
-
-- Try installing torch version 2.7.1
-- Disable `torch.compile`
 
 Slow Training
 
