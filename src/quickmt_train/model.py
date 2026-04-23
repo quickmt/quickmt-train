@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import math
-import torch.ao.quantization
 
 
 class PositionalEncoding(nn.Module):

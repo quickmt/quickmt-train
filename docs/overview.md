@@ -30,17 +30,9 @@ Once you have a config file you're happy with you can start training a model:
 quickmt-train --config configs/faen-tiny.yaml
 ```
 
-### Model Averaging
-
-To average the model weights from multiple checkpoints, use the `quickmt-avg` command:
-
-```bash
-quickmt-avg --experiment_dir ./faen-tiny
-```
-
 ### Model Export
 
-To export the model to CTranslate2 format, use the `quickmt-export` command:
+To average the model weights from multiple checkpoints and export the model to CTranslate2 format, use the `quickmt-export` command:
 
 ```bash
 quickmt-export --experiment_dir ./faen-tiny

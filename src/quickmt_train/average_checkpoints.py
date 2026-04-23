@@ -12,28 +12,10 @@ def main():
     fire.Fire(average_checkpoints_cli)
 
 
-def average_checkpoints_cli(experiment_dir: str, **kwargs):
+def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
     """
-    Average the last k checkpoints and save as safetensors/INT8.
-
-    Args:
-        experiment_dir: Path to experiment directory
-        **kwargs: Overrides for configuration parameters
+    Find and average the best k checkpoints.
     """
-    model_cfg, data_cfg, train_cfg, export_cfg = load_config(
-        os.path.join(experiment_dir, "config.yaml")
-    )
-
-    # Apply overrides
-    for key, value in kwargs.items():
-        found = False
-        for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
-            if hasattr(cfg, key):
-                setattr(cfg, key, value)
-                found = True
-        if not found:
-            print(f"Warning: Configuration key '{key}' not found in any config object.")
-
     # 1. Find the best k models based on validation perplexity
     metrics_path = os.path.join(experiment_dir, "metrics.jsonl")
     if os.path.exists(metrics_path):
@@ -63,7 +45,7 @@ def average_checkpoints_cli(experiment_dir: str, **kwargs):
         )
         if not os.path.exists(train_cfg.checkpoint_dir):
             print(f"Directory {train_cfg.checkpoint_dir} not found.")
-            return
+            return None
 
         checkpoints = [
             f
@@ -79,7 +61,7 @@ def average_checkpoints_cli(experiment_dir: str, **kwargs):
 
     if not selected:
         print("No model files found.")
-        return
+        return None
 
     print(f"Averaging {len(selected)} model checkpoints:")
     for c in selected:
@@ -127,7 +109,32 @@ def average_checkpoints_cli(experiment_dir: str, **kwargs):
     save_model(model, st_output)
     print(f"Saved averaged model to {pt_output} and {st_output}")
 
+    return avg_state_dict
 
+
+def average_checkpoints_cli(experiment_dir: str, **kwargs):
+    """
+    Average the last k checkpoints and save as safetensors/INT8.
+
+    Args:
+        experiment_dir: Path to experiment directory
+        **kwargs: Overrides for configuration parameters
+    """
+    model_cfg, data_cfg, train_cfg, export_cfg = load_config(
+        os.path.join(experiment_dir, "config.yaml")
+    )
+
+    # Apply overrides
+    for key, value in kwargs.items():
+        found = False
+        for cfg in [model_cfg, data_cfg, train_cfg, export_cfg]:
+            if hasattr(cfg, key):
+                setattr(cfg, key, value)
+                found = True
+        if not found:
+            print(f"Warning: Configuration key '{key}' not found in any config object.")
+
+    get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg)
 
 
 if __name__ == "__main__":

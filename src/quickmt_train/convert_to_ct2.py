@@ -4,6 +4,7 @@ import os
 import fire
 from safetensors.torch import load_file
 from .config import load_config
+from .average_checkpoints import get_averaged_state_dict
 from collections import OrderedDict
 import shutil
 from pathlib import Path
@@ -207,12 +208,13 @@ def convert_vocab(sp_vocab_path):
     return tokens
 
 
-def convert_to_ct2_cli(experiment_dir: str, **kwargs):
+def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
     """
     Convert a trained model to CTranslate2 format.
 
     Args:
         experiment_dir: Path to experiment directory
+        no_clobber: Skip averaging if averaged_model.safetensors already exists
         **kwargs: Overrides for configuration parameters
     """
     model_cfg, data_cfg, train_cfg, export_cfg = load_config(
@@ -229,21 +231,36 @@ def convert_to_ct2_cli(experiment_dir: str, **kwargs):
         if not found:
             print(f"Warning: Configuration key '{key}' not found in any config object.")
 
+    # Averaging
     model_file = os.path.join(experiment_dir, "averaged_model.safetensors")
+    state_dict = None
 
-    # If no averaged model, try to find the best checkpoint
-    if not os.path.exists(model_file):
-        checkpoints = sorted(
-            list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")) +
-            list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
-        )
-        if checkpoints:
-            model_file = str(checkpoints[-1])
-            print(f"Using checkpoint: {model_file}")
+    if os.path.exists(model_file):
+        if no_clobber:
+            print(f"Averaged model {model_file} already exists. Skipping averaging due to --no_clobber.")
+            state_dict = load_file(model_file, device="cpu")
         else:
-            raise FileNotFoundError(f"No model files found in {experiment_dir}")
+            print(f"Averaged model {model_file} already exists. Overwriting...")
+            state_dict = get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg)
+    else:
+        state_dict = get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg)
 
-    state_dict = load_file(model_file, device="cpu")
+    if state_dict is None:
+        # Fallback if averaging failed or returned nothing
+        print("Averaging failed to produce a state dict. Attempting to load existing averaged model or last checkpoint.")
+        if os.path.exists(model_file):
+             state_dict = load_file(model_file, device="cpu")
+        else:
+            checkpoints = sorted(
+                list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")) +
+                list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
+            )
+            if checkpoints:
+                model_file = str(checkpoints[-1])
+                print(f"Using checkpoint: {model_file}")
+                state_dict = load_file(model_file, device="cpu")
+            else:
+                raise FileNotFoundError(f"No model files found in {experiment_dir}")
 
     # Strip _orig_mod. prefix if present (from torch.compile)
     new_state_dict = OrderedDict()

@@ -159,11 +159,8 @@ Slow Training
 Once the model is trained, or at any time during training, you can export and evaluate your model:
 
 ```bash
-# Average checkpoints (and optionally quantize the model)
-# You can over-ride values in your config file by passing them as arguments, e.g. --k 1
-quickmt-avg --experiment_dir ./isen-tiny-1 --k 1
-
-# Convert to CTranslate2 format
+# Average checkpoints and convert to CTranslate2 format
+# You can override values in your config file by passing them as arguments, e.g. --k 1
 quickmt-export --experiment_dir ./isen-tiny-1
 ```
 

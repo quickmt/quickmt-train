@@ -63,14 +63,11 @@ See the [quickstart](https://quickmt.github.io/quickmt-train/quickstart/) for a 
 vim configs/faen-tiny.yaml
 
 # Train
-quickmt-train --config configs/faen-tiny.yaml 
+quickmt-train configs/faen-tiny.yaml 
 
-# Average checkpoints and quantize the model
-quickmt-avg --experiment_dir ./faen-tiny   
-
-# Convert to CTranslate2 format
-quickmt-export --experiment_dir ./faen-tiny   
+# Average checkpoints and convert to CTranslate2 format
+quickmt-export ./faen-tiny   
 
 # Evaluate (uses quickmt library, https://github.com/quickmt/quickmt)
-quickmt-eval --src_file data/flores.fa --ref_file data/flores.en --device cuda --batch_size 16 --beam_size 5 --model ./faen-tiny/exported_model
+quickmt-eval --src_file flores.fa --ref_file flores.en --device cuda --batch_size 128 --beam_size 5 --model ./faen-tiny/exported_model
 ```
