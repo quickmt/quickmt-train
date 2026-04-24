@@ -225,24 +225,41 @@ def _train_impl(
             **{f"train_{k}": serialize_val(v) for k, v in dataclasses.asdict(train_cfg).items()},
         }
 
-    # Tokenizer preparation
+# Tokenizer preparation
     from .data import PrepareData
-    
-    # We call PrepareData here to ensure tokenizers are trained if they don't exist
-    
+
+    # We call PrepareData here to ensure tokenizers are trained if they don't exist.
+    # Only rank 0 prepares data to avoid race conditions when training tokenizers.
+    # All other ranks wait at the barrier until rank 0 finishes, then load
+    # the already-existing tokenizers.
+
     import multiprocessing as mp
-    
+
     ctx = mp.get_context("spawn")
     global_step_value = ctx.Value("i", 0)
 
-    train_loader, dev_loader, src_sp, tgt_sp = PrepareData(
-        model_cfg,
-        data_cfg,
-        train_cfg,
-        global_step_value=global_step_value,
-        rank=rank,
-        world_size=world_size,
-    )
+    if is_main:
+        train_loader, dev_loader, src_sp, tgt_sp = PrepareData(
+            model_cfg,
+            data_cfg,
+            train_cfg,
+            global_step_value=global_step_value,
+            rank=rank,
+            world_size=world_size,
+        )
+
+    if world_size > 1:
+        dist.barrier()
+
+    if not is_main:
+        train_loader, dev_loader, _, _ = PrepareData(
+            model_cfg,
+            data_cfg,
+            train_cfg,
+            global_step_value=global_step_value,
+            rank=rank,
+            world_size=world_size,
+        )
 
     # Model
     print(f"{get_time_info()} Initializing model...")

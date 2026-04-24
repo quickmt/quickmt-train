@@ -1,6 +1,6 @@
 
 train:
-  experiment_name: "isen-tiny-1"
+  experiment_name: "isen-test3"
   lr: 2.0e-3
   accum_steps: 3
   warmup_steps: 5000
@@ -9,6 +9,9 @@ train:
   max_checkpoints: 10
   precision: "bfloat16" # or float16 with an older GPU
   enable_torch_compile: true 
+  checkpoint_strategy: best
+  early_stopping_patience: 10
+  early_stopping_metric: chrf
 
 data:
   src_lang: "is"
@@ -20,6 +23,12 @@ data:
   corpora: 
     - src_file: "quickmt-train.is-en.is"
       tgt_file: "quickmt-train.is-en.en"
+      weight: 2
+      start_step: 10000 # delay starting due to being more difficult for the model to learn
+    - src_file: "finetranslations.isl_Latn-eng_Latn.isl_Latn"
+      tgt_file: "finetranslations.isl_Latn-eng_Latn.eng_Latn"
+      weight: 1 # lower weight because it is synthetic data
+      start_step: 0 # start at the beginning; synthetic data is easier for the model to learn
 
 model:
   d_model: 384

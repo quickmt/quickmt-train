@@ -104,7 +104,6 @@ Next we train our model!
 quickmt-train path/to/your/config.yaml
 
 # Or, if you are lucky enough to have more than one GPU
-# Be sure to adjust your effective batch size appropriately
 torchrun --nproc_per_node=2 -m quickmt_train.train path/to/your/config.yaml
 ```
 
