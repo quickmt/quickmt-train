@@ -37,6 +37,21 @@ class PrecisionType(StrEnum):
     FP32 = "fp32"
     FLOAT32 = "float32"
 
+class CheckpointStrategy(StrEnum):
+    RECENT = "recent"
+    BEST = "best"
+
+class EarlyStoppingMetric(StrEnum):
+    LOSS = "loss"
+    PPL = "ppl"
+    ACC = "acc"
+    BLEU = "bleu"
+    CHRF = "chrf"
+
+    @property
+    def lower_is_better(self) -> bool:
+        return self in (EarlyStoppingMetric.LOSS, EarlyStoppingMetric.PPL)
+
 class QuantizationType(StrEnum):
     INT8 = "int8"
     INT16 = "int16"
@@ -63,8 +78,8 @@ class ModelConfig:
     ff_bias: bool = True
     layernorm_eps: float = 1e-6
     activation: ActivationType = ActivationType.GELU
-    mlp_type: MLPType = MLPType.STANDARD  # "standard" or "gated"
-    norm_type: NormType = NormType.LAYERNORM  # "layernorm" or "rmsnorm"
+    mlp_type: MLPType = MLPType.STANDARD
+    norm_type: NormType = NormType.LAYERNORM
     tie_decoder_embeddings: bool = False
     joint_vocab: bool = False
 
@@ -148,7 +163,7 @@ class TrainConfig:
     adam_beta2: float = 0.998
 
     # Scheduler
-    scheduler_type: SchedulerType = SchedulerType.INV_SQRT  # "inv_sqrt" or "cosine"
+    scheduler_type: SchedulerType = SchedulerType.INV_SQRT
     warmup_steps: int = 5000
     max_steps: int = 100000
     epochs: int = 20
@@ -159,10 +174,15 @@ class TrainConfig:
     eval_steps: int = 1000
     max_checkpoints: int = 5
     save_checkpoints: bool = True
+    checkpoint_strategy: CheckpointStrategy = CheckpointStrategy.BEST
+
+    # Early Stopping
+    early_stopping_patience: int = 10
+    early_stopping_metric: EarlyStoppingMetric = EarlyStoppingMetric.CHRF
 
     # Hardware & Performance
-    device: DeviceType = DeviceType.CUDA  # "cuda", "cpu", or "auto"
-    precision: PrecisionType = PrecisionType.BF16  # "bf16", "fp16", "fp32"
+    device: DeviceType = DeviceType.CUDA
+    precision: PrecisionType = PrecisionType.BF16
     tf32: bool = True
 
     # Logging & Validation

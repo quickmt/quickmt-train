@@ -3,6 +3,7 @@ import os
 import fire
 import json
 from safetensors.torch import load_file, save_model
+from .checkpoint_utils import get_best_steps, extract_step
 from .config import load_config
 from .model import Seq2SeqTransformer
 from .data import PrepareData
@@ -16,32 +17,26 @@ def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
     """
     Find and average the best k checkpoints.
     """
-    # 1. Find the best k models based on validation perplexity
     metrics_path = os.path.join(experiment_dir, "metrics.jsonl")
-    if os.path.exists(metrics_path):
-        print(f"Reading metrics from {metrics_path}")
-        metrics = []
-        with open(metrics_path, "r") as f:
-            for line in f:
-                metrics.append(json.loads(line))
+    best_steps = get_best_steps(
+        metrics_path,
+        train_cfg.early_stopping_metric.value,
+        train_cfg.early_stopping_metric.lower_is_better,
+        export_cfg.k
+    )
 
-        # Sort by perplexity (ppl) ascending (lower is better)
-        metrics.sort(key=lambda x: x.get("ppl", float("inf")))
-
-        best_steps = [m["step"] for m in metrics]
+    if best_steps:
         selected = [f"model_{step}.safetensors" for step in best_steps]
-
         # Verify files exist
         selected = [
             f
             for f in selected
             if os.path.exists(os.path.join(train_cfg.checkpoint_dir, f))
         ]
-        selected = selected[: export_cfg.k]
-        print(f"Selected {len(selected)} best checkpoints based on PPL.")
+        print(f"Selected {len(selected)} best checkpoints based on {train_cfg.early_stopping_metric.value}.")
     else:
         print(
-            f"Metrics file {metrics_path} not found. Falling back to last k checkpoints."
+            f"No suitable metrics found in {metrics_path}. Falling back to last k checkpoints."
         )
         if not os.path.exists(train_cfg.checkpoint_dir):
             print(f"Directory {train_cfg.checkpoint_dir} not found.")
@@ -56,7 +51,7 @@ def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
         ]
 
         # Sort by step number
-        checkpoints.sort(key=lambda x: int(x.split("_")[1].split(".")[0]), reverse=True)
+        checkpoints.sort(key=extract_step, reverse=True)
         selected = checkpoints[: export_cfg.k]
 
     if not selected:

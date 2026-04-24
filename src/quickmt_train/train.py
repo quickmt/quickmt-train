@@ -28,7 +28,8 @@ from shutil import copyfile
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from .config import DataConfig, ModelConfig, TrainConfig
+from .config import CheckpointStrategy, DataConfig, EarlyStoppingMetric, ModelConfig, TrainConfig
+from .checkpoint_utils import get_best_steps, extract_step
 from .data import PrepareData
 from .model import Seq2SeqTransformer
 
@@ -359,6 +360,8 @@ def _train_impl(
     global_step = 0
 
     # Checkpoint loading (state)
+    best_val_metric = None
+    steps_since_best = 0
     if (
         train_cfg.resume_from
         and train_cfg.resume_from.endswith(".pt")
@@ -373,6 +376,8 @@ def _train_impl(
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             global_step = checkpoint.get("step", 0)
             global_step_value.value = global_step
+            if checkpoint.get("best_val_metric") is not None and train_cfg.early_stopping_patience > 0:
+                best_val_metric = checkpoint["best_val_metric"]
             print(f"{get_time_info()} Resumed from step {global_step}")
 
     # Loop
@@ -402,7 +407,7 @@ def _train_impl(
     accum_tokens = 0
     last_batch_loss = 0.0
     last_grad_norm = 0.0
-    clipping_count = 0  # Count of clipping events since last log
+    clipping_count = 0 # Count of clipping events since last log
     latest_val_metrics = None
 
     for batch_idx, (src, tgt) in enumerate(train_loader, start=1):
@@ -444,7 +449,7 @@ def _train_impl(
         batch_src_tokens += (src != model_cfg.pad_id).sum().item()
         batch_tgt_tokens += (tgt != model_cfg.pad_id).sum().item()
 
-        if (batch_idx + 1) % train_cfg.accum_steps == 0:
+        if batch_idx % train_cfg.accum_steps == 0:
             # Scale and clip
             # Scale gradients by total number of tokens in the accumulation bucket
             # For DDP, we must synchronize the token count across all processes to avoid weight divergence.
@@ -524,7 +529,22 @@ def _train_impl(
                 if on_eval_step is not None:
                     on_eval_step(val_metrics, global_step)
 
-            # Progress Print (Rank 0 only)
+                # Early Stopping Logic (synchronized for DDP)
+                stop_training = torch.tensor(0, device=device)
+                if train_cfg.early_stopping_patience > 0:
+                    metric = val_metrics.get(train_cfg.early_stopping_metric.value)
+                    if metric is not None:
+                        if best_val_metric is None or (metric < best_val_metric if train_cfg.early_stopping_metric.lower_is_better else metric > best_val_metric):
+                            best_val_metric, steps_since_best = metric, 0
+                        else:
+                            steps_since_best += 1
+                        
+                        if steps_since_best >= train_cfg.early_stopping_patience:
+                            if is_main: print(f"{get_time_info()} Early stopping at step {global_step} (patience reached)")
+                            stop_training.fill_(1)
+
+                if world_size > 1: dist.all_reduce(stop_training, op=dist.ReduceOp.MAX)
+                if stop_training.item() > 0: break
             if is_main and global_step % train_cfg.log_steps == 0:
                 curr_lr = optimizer.param_groups[0]["lr"]
                 elapsed = time.time() - last_log_time
@@ -655,6 +675,7 @@ def save_checkpoint(
             "step": step,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_metric": val_metrics.get(config.early_stopping_metric.value) if val_metrics else None,
         },
         path_pt,
     )
@@ -674,26 +695,43 @@ def save_checkpoint(
         except Exception as e:
             print(f"{get_time_info()} Could not export INT8 model: {e}")
 
-    # Rotation
-    def get_step(f):
-        try:
-            # model_1000.safetensors or checkpoint_1000.pt
-            return int(f.split("_")[1].split(".")[0])
-        except (ValueError, IndexError):
-            return -1
-
     all_files = os.listdir(config.checkpoint_dir)
     checkpoints_pt = sorted(
-        [f for f in all_files if f.startswith("checkpoint_")], key=get_step
+        [f for f in all_files if f.startswith("checkpoint_")], key=extract_step
     )
-    models_st = sorted([f for f in all_files if f.startswith("model_")], key=get_step)
+    models_st = sorted([f for f in all_files if f.startswith("model_") and f.endswith(".safetensors")], key=extract_step)
 
-    if len(checkpoints_pt) > config.max_checkpoints:
-        os.remove(os.path.join(config.checkpoint_dir, checkpoints_pt[0]))
-        print(f"{get_time_info()} Removed old state: {checkpoints_pt[0]}")
-    if len(models_st) > config.max_checkpoints:
-        os.remove(os.path.join(config.checkpoint_dir, models_st[0]))
-        print(f"{get_time_info()} Removed old weights: {models_st[0]}")
+    if config.checkpoint_strategy == CheckpointStrategy.BEST:
+        metrics_path = os.path.join(config.experiment_name, "metrics.jsonl")
+        best_steps = get_best_steps(
+            metrics_path,
+            config.early_stopping_metric.value,
+            config.early_stopping_metric.lower_is_better,
+            config.max_checkpoints
+        )
+        
+        keep_steps = set(best_steps)
+        keep_steps.add(step) # Always keep current for safety
+
+        if not best_steps:
+            print(f"{get_time_info()} Warning: no metric scores found, skipping best-checkpoint cleanup")
+        else:
+            for ckpt_file in checkpoints_pt:
+                if extract_step(ckpt_file) not in keep_steps:
+                    os.remove(os.path.join(config.checkpoint_dir, ckpt_file))
+                    print(f"{get_time_info()} Removed old state (not in top-{config.max_checkpoints}): {ckpt_file}")
+
+            for model_file in models_st:
+                if extract_step(model_file) not in keep_steps:
+                    os.remove(os.path.join(config.checkpoint_dir, model_file))
+                    print(f"{get_time_info()} Removed old weights (not in top-{config.max_checkpoints}): {model_file}")
+    else:
+        if len(checkpoints_pt) > config.max_checkpoints:
+            os.remove(os.path.join(config.checkpoint_dir, checkpoints_pt[0]))
+            print(f"{get_time_info()} Removed old state: {checkpoints_pt[0]}")
+        if len(models_st) > config.max_checkpoints:
+            os.remove(os.path.join(config.checkpoint_dir, models_st[0]))
+            print(f"{get_time_info()} Removed old weights: {models_st[0]}")
 
 
 def validate(
@@ -727,7 +765,7 @@ def validate(
             autocast_dtype = torch.float16
 
     with torch.inference_mode():
-        for batch_idx, (src, tgt) in enumerate(loader):
+        for batch_idx, (src, tgt) in enumerate(loader, start=1):
             src, tgt = (
                 src.to(device, non_blocking=True),
                 tgt.to(device, non_blocking=True),
@@ -775,23 +813,27 @@ def validate(
                 hypotheses.append(hyp)
                 references.append(ref)
 
-    avg_loss = total_loss_sum / max(1, total_tokens)
-    ppl = math.exp(min(avg_loss, 100))
-    acc = correct_tokens / max(1, total_tokens)
+    if dist.is_initialized():
+        sync_t = torch.tensor([total_loss_sum, float(total_tokens), float(correct_tokens)], device=device)
+        dist.all_reduce(sync_t, op=dist.ReduceOp.SUM)
+        total_loss_sum, total_tokens, correct_tokens = sync_t.tolist()
+        
+        all_h, all_r = [None] * dist.get_world_size(), [None] * dist.get_world_size()
+        dist.all_gather_object(all_h, hypotheses)
+        dist.all_gather_object(all_r, references)
+        hypotheses, references = [i for s in all_h for i in s], [i for s in all_r for i in s]
 
+    avg_loss = total_loss_sum / max(1, total_tokens)
+    ppl, acc = math.exp(min(avg_loss, 100)), correct_tokens / max(1, total_tokens)
     bleu = sacrebleu.corpus_bleu(hypotheses, [references]).score
     chrf = sacrebleu.corpus_chrf(hypotheses, [references]).score
-
     metrics = {"loss": avg_loss, "ppl": ppl, "acc": acc, "bleu": bleu, "chrf": chrf}
 
-    print(
-        f"\n{get_time_info()} [Validation] Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | Acc: {acc:.4f} | BLEU: {bleu:.2f} | ChrF: {chrf:.2f}"
-    )
-    for i in range(min(train_cfg.quick_test_samples, len(hypotheses))):
-        print(f"Sample {i}:")
-        print(f"  Ref: {references[i]}")
-        print(f"  Hyp: {hypotheses[i]}")
-    print("-" * 30)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        print(f"\n{get_time_info()} [Validation] Loss: {avg_loss:.4f} | BLEU: {bleu:.2f} | ChrF: {chrf:.2f}")
+        for i in range(min(train_cfg.quick_test_samples, len(hypotheses))):
+            print(f"Sample {i}: Ref: {references[i][:100]}... | Hyp: {hypotheses[i][:100]}...")
+        print("-" * 30)
 
     model.train()
     return metrics
