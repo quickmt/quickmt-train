@@ -101,7 +101,11 @@ Gradient accumulation allows simulating larger batch sizes without additional GP
 Next we train our model!
 
 ```bash
-quickmt-train configs/isen-tiny-1.yaml
+quickmt-train path/to/your/config.yaml
+
+# Or, if you are lucky enough to have more than one GPU
+# Be sure to adjust your effective batch size appropriately
+torchrun --nproc_per_node=2 -m quickmt_train.train path/to/your/config.yaml
 ```
 
 During training, the following will be created in your experiment directory (`./isen-tiny-1/`):

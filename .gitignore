@@ -217,7 +217,6 @@ tokenizer_src.model
 tokenizer_src.vocab
 tokenizer_tgt.model
 tokenizer_tgt.vocab
-checkpoint*
 QAT_REMOVAL_SUMMARY.md
 QUANTIZATION.md
 ct2_model_int8/
