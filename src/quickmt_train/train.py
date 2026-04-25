@@ -269,34 +269,6 @@ def _train_impl(
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    # NOTE: torch.compile is disabled for multi-GPU DDP runs.
-    if (
-        world_size == 1
-        and train_cfg.enable_torch_compile
-        and not (torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"])
-    ):
-        if is_main:
-            print(
-                f"{get_time_info()} Attempting to enable torch.compile for single-GPU training"
-            )
-        try:
-            # When using torch.compile, we can use Inductor's native recomputation
-            # which is more efficient and avoids conflicts with manual checkpoint().
-            if model_cfg.use_checkpoint and inductor_config is not None:
-                inductor_config.recompute_all = True
-                # Disable manual checkpointing because we use Inductor native instead
-                model.config.use_checkpoint = False
-
-            model = torch.compile(model, dynamic=True)
-
-            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
-                print(
-                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
-                )
-        except Exception as e:
-            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
-            print(f"{get_time_info()} Falling back to non-compiled mode")
-
     # Wrap model in DDP/DP
     if world_size > 1:
         model = DDP(
@@ -315,6 +287,30 @@ def _train_impl(
             f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
         )
         model = nn.DataParallel(model)
+
+    if train_cfg.enable_torch_compile:
+        if is_main:
+            print(
+                f"{get_time_info()} Attempting to enable torch.compile"
+            )
+        try:
+            # When using torch.compile, we can use Inductor's native recomputation
+            # which is more efficient and avoids conflicts with manual checkpoint().
+            if model_cfg.use_checkpoint and inductor_config is not None:
+                inductor_config.recompute_all = True
+                # Disable manual checkpointing because we use Inductor native instead
+                raw_model = model.module if hasattr(model, "module") else model
+                raw_model.config.use_checkpoint = False
+
+            model = torch.compile(model, dynamic=True)
+
+            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
+                print(
+                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
+                )
+        except Exception as e:
+            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
+            print(f"{get_time_info()} Falling back to non-compiled mode")
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
