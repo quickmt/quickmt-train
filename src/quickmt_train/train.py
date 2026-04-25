@@ -269,25 +269,6 @@ def _train_impl(
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    # Wrap model in DDP/DP
-    if world_size > 1:
-        model = DDP(
-            model,
-            device_ids=[local_rank],
-            find_unused_parameters=False,
-            gradient_as_bucket_view=True,
-            broadcast_buffers=False,
-        )
-        if is_main:
-            print(
-                f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
-            )
-    elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
-        print(
-            f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
-        )
-        model = nn.DataParallel(model)
-
     if train_cfg.enable_torch_compile:
         if is_main:
             print(
@@ -299,8 +280,7 @@ def _train_impl(
             if model_cfg.use_checkpoint and inductor_config is not None:
                 inductor_config.recompute_all = True
                 # Disable manual checkpointing because we use Inductor native instead
-                raw_model = model.module if hasattr(model, "module") else model
-                raw_model.config.use_checkpoint = False
+                model.config.use_checkpoint = False
 
             model = torch.compile(model, dynamic=True)
 
@@ -311,6 +291,28 @@ def _train_impl(
         except Exception as e:
             print(f"{get_time_info()} Failed to enable torch.compile: {e}")
             print(f"{get_time_info()} Falling back to non-compiled mode")
+
+    # Wrap model in DDP/DP
+    if world_size > 1:
+        # Note: Compiling before DDP wrapping is often safer to avoid NCCL deadlocks 
+        # caused by compiled DDP collective graphs when batch shapes are dynamic across ranks.
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            find_unused_parameters=False,
+            gradient_as_bucket_view=True,
+            broadcast_buffers=False,
+            # static_graph=True, # Do not use static graph if shapes are dynamic
+        )
+        if is_main:
+            print(
+                f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
+            )
+    elif torch.cuda.device_count() > 1 and train_cfg.device in ["cuda", "auto"]:
+        print(
+            f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
+        )
+        model = nn.DataParallel(model)
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
