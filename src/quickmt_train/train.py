@@ -291,7 +291,11 @@ def _train_impl(
             # Disable manual checkpointing because we use Inductor native instead
             model.config.use_checkpoint = False
 
-    # Wrap model in DDP/DP first, THEN compile (recommended order for torch.compile + DDP)
+    # Wrap model in DDP/DP first, THEN compile (recommended order for torch.compile + DDP).
+    # We keep a separate reference to the DDP object (ddp_model) so that no_sync() can be
+    # called on it directly — torch.compile wraps the model in an OptimizedModule that does
+    # not expose no_sync(), so calling model.no_sync() after compilation would AttributeError.
+    ddp_model = None
     if world_size > 1:
         model = DDP(
             model,
@@ -301,6 +305,7 @@ def _train_impl(
             broadcast_buffers=False,
             # static_graph=True, # Do not use static graph if shapes are dynamic
         )
+        ddp_model = model  # Save reference before compile wraps it
         if is_main:
             print(
                 f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
@@ -456,9 +461,11 @@ def _train_impl(
             if num_tokens.ndim > 0:
                 num_tokens = num_tokens.sum()
 
-        # Backward pass with optional gradient synchronization
+        # Backward pass with optional gradient synchronization.
+        # no_sync() must be called on the DDP object directly — torch.compile wraps
+        # the model in an OptimizedModule that does not expose no_sync().
         if world_size > 1 and batch_idx % train_cfg.accum_steps != 0:
-            context = model.no_sync()
+            context = ddp_model.no_sync()
         else:
             from contextlib import nullcontext
 
