@@ -102,7 +102,10 @@ def setup_dist(train_cfg):
         rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        dist.init_process_group("nccl")
+        # Set a 10-minute NCCL timeout so collective deadlocks surface as a clear
+        # error with a stack trace rather than hanging indefinitely.
+        from datetime import timedelta
+        dist.init_process_group("nccl", timeout=timedelta(minutes=10))
         torch.cuda.set_device(local_rank)
         return rank, local_rank, world_size
     else:
@@ -282,20 +285,32 @@ def _train_impl(
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
-    # When using torch.compile, configure Inductor before wrapping in DDP.
-    # The actual compile() call happens AFTER DDP wrapping so the full
-    # forward+backward+all-reduce graph is compiled as a single unit.
+    # torch.compile is applied to the INNER model BEFORE DDP wrapping.
+    #
+    # Compiling after DDP wraps the DDP all-reduce hooks into the compiled graph,
+    # which causes hard-to-diagnose deadlocks: torch.compile may trace the backward
+    # graph once (with or without all-reduce depending on require_backward_grad_sync
+    # at trace time) and then bake that decision in permanently for all future calls.
+    # By compiling the inner model first, DDP's hooks remain outside the compiled
+    # graph and fire correctly at runtime based on require_backward_grad_sync.
     if train_cfg.enable_torch_compile:
-        if model_cfg.use_checkpoint and inductor_config is not None:
-            inductor_config.recompute_all = True
-            # Disable manual checkpointing because we use Inductor native instead
-            model.config.use_checkpoint = False
+        if is_main:
+            print(f"{get_time_info()} Attempting to enable torch.compile")
+        try:
+            if model_cfg.use_checkpoint and inductor_config is not None:
+                inductor_config.recompute_all = True
+                model.config.use_checkpoint = False
+                if is_main:
+                    print(f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)")
 
-    # Wrap model in DDP/DP first, THEN compile (recommended order for torch.compile + DDP).
-    # We keep a separate reference to the DDP object (ddp_model) so we can set
-    # require_backward_grad_sync directly on it for gradient accumulation.
-    # We do NOT use no_sync() — torch.compile can trace that context manager into the compiled
-    # graph and bake in the "skip all-reduce" decision permanently, breaking subsequent steps.
+            model = torch.compile(model, dynamic=True)
+        except Exception as e:
+            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
+            print(f"{get_time_info()} Falling back to non-compiled mode")
+
+    # Wrap compiled model in DDP/DP.
+    # ddp_model holds the DDP reference so we can set require_backward_grad_sync
+    # directly on it for gradient accumulation without using no_sync().
     ddp_model = None
     if world_size > 1:
         model = DDP(
@@ -306,7 +321,7 @@ def _train_impl(
             broadcast_buffers=False,
             # static_graph=True, # Do not use static graph if shapes are dynamic
         )
-        ddp_model = model  # Save reference before compile wraps it
+        ddp_model = model
         if is_main:
             print(
                 f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
@@ -316,22 +331,6 @@ def _train_impl(
             f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
         )
         model = nn.DataParallel(model)
-
-    if train_cfg.enable_torch_compile:
-        if is_main:
-            print(
-                f"{get_time_info()} Attempting to enable torch.compile"
-            )
-        try:
-            model = torch.compile(model, dynamic=True)
-
-            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
-                print(
-                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
-                )
-        except Exception as e:
-            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
-            print(f"{get_time_info()} Falling back to non-compiled mode")
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
