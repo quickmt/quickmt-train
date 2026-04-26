@@ -34,11 +34,24 @@ from .data import PrepareData
 from .model import Seq2SeqTransformer
 
 
+def unwrap_model(model):
+    """Unwrap a model through torch.compile (_orig_mod) and DDP/DP (.module) layers."""
+    m = model
+    # Peel off compile wrapper
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    # Peel off DDP/DataParallel wrapper
+    if hasattr(m, "module"):
+        m = m.module
+    # One more compile wrapper in case compile was applied before DDP
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    return m
+
+
 def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
     # Calculate parameters for sub-modules
-    raw_model = model.module if hasattr(model, "module") else model
-    if hasattr(raw_model, "_orig_mod"):
-        raw_model = raw_model._orig_mod
+    raw_model = unwrap_model(model)
 
     src_emb_params = sum(p.numel() for p in raw_model.src_tok_emb.parameters())
     tgt_emb_params = sum(p.numel() for p in raw_model.tgt_tok_emb.parameters())
@@ -252,7 +265,7 @@ def _train_impl(
         dist.barrier()
 
     if not is_main:
-        train_loader, dev_loader, _, _ = PrepareData(
+        train_loader, dev_loader, src_sp, tgt_sp = PrepareData(
             model_cfg,
             data_cfg,
             train_cfg,
@@ -269,33 +282,17 @@ def _train_impl(
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
+    # When using torch.compile, configure Inductor before wrapping in DDP.
+    # The actual compile() call happens AFTER DDP wrapping so the full
+    # forward+backward+all-reduce graph is compiled as a single unit.
     if train_cfg.enable_torch_compile:
-        if is_main:
-            print(
-                f"{get_time_info()} Attempting to enable torch.compile"
-            )
-        try:
-            # When using torch.compile, we can use Inductor's native recomputation
-            # which is more efficient and avoids conflicts with manual checkpoint().
-            if model_cfg.use_checkpoint and inductor_config is not None:
-                inductor_config.recompute_all = True
-                # Disable manual checkpointing because we use Inductor native instead
-                model.config.use_checkpoint = False
+        if model_cfg.use_checkpoint and inductor_config is not None:
+            inductor_config.recompute_all = True
+            # Disable manual checkpointing because we use Inductor native instead
+            model.config.use_checkpoint = False
 
-            model = torch.compile(model, dynamic=True)
-
-            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
-                print(
-                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
-                )
-        except Exception as e:
-            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
-            print(f"{get_time_info()} Falling back to non-compiled mode")
-
-    # Wrap model in DDP/DP
+    # Wrap model in DDP/DP first, THEN compile (recommended order for torch.compile + DDP)
     if world_size > 1:
-        # Note: Compiling before DDP wrapping is often safer to avoid NCCL deadlocks 
-        # caused by compiled DDP collective graphs when batch shapes are dynamic across ranks.
         model = DDP(
             model,
             device_ids=[local_rank],
@@ -313,6 +310,22 @@ def _train_impl(
             f"{get_time_info()} Detected {torch.cuda.device_count()} GPUs. Using DataParallel."
         )
         model = nn.DataParallel(model)
+
+    if train_cfg.enable_torch_compile:
+        if is_main:
+            print(
+                f"{get_time_info()} Attempting to enable torch.compile"
+            )
+        try:
+            model = torch.compile(model, dynamic=True)
+
+            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
+                print(
+                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
+                )
+        except Exception as e:
+            print(f"{get_time_info()} Failed to enable torch.compile: {e}")
+            print(f"{get_time_info()} Falling back to non-compiled mode")
 
     if is_main:
         print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info)
@@ -444,7 +457,7 @@ def _train_impl(
                 num_tokens = num_tokens.sum()
 
         # Backward pass with optional gradient synchronization
-        if world_size > 1 and (batch_idx + 1) % train_cfg.accum_steps != 0:
+        if world_size > 1 and batch_idx % train_cfg.accum_steps != 0:
             context = model.no_sync()
         else:
             from contextlib import nullcontext
@@ -619,40 +632,42 @@ def _train_impl(
             get_time_info,
         )
 
-        if global_step % train_cfg.eval_steps != 0:
-            val_metrics = validate(
-                model,
-                dev_loader,
-                src_sp,
-                tgt_sp,
-                device,
-                train_cfg,
-                data_cfg,
-                model_cfg,
-                get_time_info,
-            )
-            latest_val_metrics = val_metrics
-            if is_main:
-                if run:
-                    for k, v in val_metrics.items():
-                        run.track(
-                            v,
-                            name=f"val_{k}",
-                            step=global_step,
-                            context={"subset": "dev"},
-                        )
-                if getattr(train_cfg, "save_checkpoints", True):
-                    save_checkpoint(
-                        global_step,
-                        model,
-                        optimizer,
-                        scheduler,
-                        train_cfg,
-                        get_time_info,
-                        val_metrics=val_metrics,
+    # Run final validation on ALL ranks if we haven't just validated.
+    # validate() uses dist.all_reduce internally so every rank must participate.
+    if global_step % train_cfg.eval_steps != 0:
+        val_metrics = validate(
+            model,
+            dev_loader,
+            src_sp,
+            tgt_sp,
+            device,
+            train_cfg,
+            data_cfg,
+            model_cfg,
+            get_time_info,
+        )
+        latest_val_metrics = val_metrics
+        if is_main:
+            if run:
+                for k, v in val_metrics.items():
+                    run.track(
+                        v,
+                        name=f"val_{k}",
+                        step=global_step,
+                        context={"subset": "dev"},
                     )
-            if on_eval_step is not None:
-                on_eval_step(val_metrics, global_step)
+            if getattr(train_cfg, "save_checkpoints", True):
+                save_checkpoint(
+                    global_step,
+                    model,
+                    optimizer,
+                    scheduler,
+                    train_cfg,
+                    get_time_info,
+                    val_metrics=val_metrics,
+                )
+        if on_eval_step is not None:
+            on_eval_step(val_metrics, global_step)
 
     return latest_val_metrics
 
@@ -675,9 +690,7 @@ def save_checkpoint(
 
     # Use save_model instead of save_file to handle shared tensors (tied embeddings)
     # We need to unwrap the model to get the underlying structure for save_model
-    raw_model = model.module if hasattr(model, "module") else model
-    if hasattr(raw_model, "_orig_mod"):
-        raw_model = raw_model._orig_mod
+    raw_model = unwrap_model(model)
 
     path = os.path.join(config.checkpoint_dir, f"model_{step}.safetensors")
     save_model(raw_model, path)
@@ -697,7 +710,7 @@ def save_checkpoint(
     print(f"{get_time_info()} Training state saved: {path_pt}")
 
     # If it's a quantized model, also save a converted version for inference
-    raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+    raw_model = unwrap_model(model)
     if hasattr(raw_model, "qconfig") and raw_model.qconfig is not None:
         import copy
 
@@ -805,7 +818,7 @@ def validate(
             correct_tokens += ((preds == tgt_labels) & mask_acc).sum().item()
 
             if use_autoregressive:
-                raw_model = model.module if hasattr(model, "module") else model
+                raw_model = unwrap_model(model)
                 enc = raw_model.encode(src)
                 generated_ids = raw_model.generate(
                     src,
@@ -875,7 +888,7 @@ def run_quick_test(
                 t_tensor = tgt[i : i + 1]
 
                 # Generate
-                raw_model = model.module if hasattr(model, "module") else model
+                raw_model = unwrap_model(model)
                 generated_ids = raw_model.generate(
                     s_tensor,
                     max_len=model_cfg.max_len,

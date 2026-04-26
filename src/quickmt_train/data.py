@@ -577,7 +577,23 @@ def PrepareData(
         infinite=False,
     )
 
-    # 4. Loaders
+    # 4. Sanity-check: warn if any corpus is too small to feed every shard
+    total_shards = world_size * data_cfg.num_workers if data_cfg.num_workers > 0 else world_size
+    for c in data_cfg.corpora:
+        try:
+            with open(c.src_file, "r", encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+            if line_count < total_shards:
+                print(
+                    f"Warning: corpus '{c.src_file}' has only {line_count} lines "
+                    f"but {total_shards} total shards (world_size={world_size} × "
+                    f"num_workers={data_cfg.num_workers if data_cfg.num_workers > 0 else 1}). "
+                    f"Some workers will receive no data."
+                )
+        except OSError:
+            pass
+
+    # 5. Loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,
