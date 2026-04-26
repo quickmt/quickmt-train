@@ -292,9 +292,10 @@ def _train_impl(
             model.config.use_checkpoint = False
 
     # Wrap model in DDP/DP first, THEN compile (recommended order for torch.compile + DDP).
-    # We keep a separate reference to the DDP object (ddp_model) so that no_sync() can be
-    # called on it directly — torch.compile wraps the model in an OptimizedModule that does
-    # not expose no_sync(), so calling model.no_sync() after compilation would AttributeError.
+    # We keep a separate reference to the DDP object (ddp_model) so we can set
+    # require_backward_grad_sync directly on it for gradient accumulation.
+    # We do NOT use no_sync() — torch.compile can trace that context manager into the compiled
+    # graph and bake in the "skip all-reduce" decision permanently, breaking subsequent steps.
     ddp_model = None
     if world_size > 1:
         model = DDP(
@@ -462,17 +463,14 @@ def _train_impl(
                 num_tokens = num_tokens.sum()
 
         # Backward pass with optional gradient synchronization.
-        # no_sync() must be called on the DDP object directly — torch.compile wraps
-        # the model in an OptimizedModule that does not expose no_sync().
-        if world_size > 1 and batch_idx % train_cfg.accum_steps != 0:
-            context = ddp_model.no_sync()
-        else:
-            from contextlib import nullcontext
-
-            context = nullcontext()
-
-        with context:
-            scaler.scale(loss).backward()
+        # We use require_backward_grad_sync rather than the no_sync() context manager.
+        # no_sync() is a context manager that torch.compile can trace into the graph and
+        # bake in permanently, making it ignore the flag on subsequent compiled calls.
+        # require_backward_grad_sync is a plain attribute assignment that DDP checks at
+        # runtime during the backward pass, so it works correctly with torch.compile.
+        if ddp_model is not None:
+            ddp_model.require_backward_grad_sync = (batch_idx % train_cfg.accum_steps == 0)
+        scaler.scale(loss).backward()
 
         accum_loss += loss.item()
         accum_tokens += num_tokens.item()
