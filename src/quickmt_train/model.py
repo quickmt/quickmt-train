@@ -690,8 +690,12 @@ class Seq2SeqTransformer(nn.Module):
         mask = tgt_out != self.config.pad_id
         num_tokens = mask.sum()
 
+        # Project all positions and use ignore_index for padding.
+        # Avoids boolean fancy-indexing (outs[mask]) which produces a dynamic output shape
+        # that causes torch.compile to recompile on every batch with a different pad ratio.
+        logits = self.project(outs)
+
         if return_outputs:
-            logits = self.project(outs)
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, self.generator.out_features),
                 tgt_out.reshape(-1),
@@ -701,14 +705,10 @@ class Seq2SeqTransformer(nn.Module):
             )
             return loss, (logits, num_tokens)
         else:
-            # Optimal path for training: only project valid tokens
-            outs_flat = outs[mask]
-            logits_flat = self.project(outs_flat)
-            tgt_out_flat = tgt_out[mask]
-
             loss = nn.functional.cross_entropy(
-                logits_flat,
-                tgt_out_flat,
+                logits.reshape(-1, self.generator.out_features),
+                tgt_out.reshape(-1),
+                ignore_index=self.config.pad_id,
                 label_smoothing=label_smoothing,
                 reduction="sum",
             )

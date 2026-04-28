@@ -34,11 +34,24 @@ from .data import PrepareData
 from .model import Seq2SeqTransformer
 
 
+def unwrap_model(model):
+    """Unwrap a model through torch.compile (_orig_mod) and DDP/DP (.module) layers."""
+    m = model
+    # Peel off compile wrapper
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    # Peel off DDP/DataParallel wrapper
+    if hasattr(m, "module"):
+        m = m.module
+    # One more compile wrapper in case compile was applied before DDP
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    return m
+
+
 def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
     # Calculate parameters for sub-modules
-    raw_model = model.module if hasattr(model, "module") else model
-    if hasattr(raw_model, "_orig_mod"):
-        raw_model = raw_model._orig_mod
+    raw_model = unwrap_model(model)
 
     src_emb_params = sum(p.numel() for p in raw_model.src_tok_emb.parameters())
     tgt_emb_params = sum(p.numel() for p in raw_model.tgt_tok_emb.parameters())
@@ -89,7 +102,10 @@ def setup_dist(train_cfg):
         rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        dist.init_process_group("nccl")
+        # Set a 10-minute NCCL timeout so collective deadlocks surface as a clear
+        # error with a stack trace rather than hanging indefinitely.
+        from datetime import timedelta
+        dist.init_process_group("nccl", timeout=timedelta(minutes=10))
         torch.cuda.set_device(local_rank)
         return rank, local_rank, world_size
     else:
@@ -252,7 +268,7 @@ def _train_impl(
         dist.barrier()
 
     if not is_main:
-        train_loader, dev_loader, _, _ = PrepareData(
+        train_loader, dev_loader, src_sp, tgt_sp = PrepareData(
             model_cfg,
             data_cfg,
             train_cfg,
@@ -269,33 +285,34 @@ def _train_impl(
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
 
+    # torch.compile is applied to the INNER model BEFORE DDP wrapping.
+    #
+    # Compiling after DDP wraps the DDP all-reduce hooks into the compiled graph,
+    # which causes hard-to-diagnose deadlocks: torch.compile may trace the backward
+    # graph once (with or without all-reduce depending on require_backward_grad_sync
+    # at trace time) and then bake that decision in permanently for all future calls.
+    # By compiling the inner model first, DDP's hooks remain outside the compiled
+    # graph and fire correctly at runtime based on require_backward_grad_sync.
     if train_cfg.enable_torch_compile:
         if is_main:
-            print(
-                f"{get_time_info()} Attempting to enable torch.compile"
-            )
+            print(f"{get_time_info()} Attempting to enable torch.compile")
         try:
-            # When using torch.compile, we can use Inductor's native recomputation
-            # which is more efficient and avoids conflicts with manual checkpoint().
             if model_cfg.use_checkpoint and inductor_config is not None:
                 inductor_config.recompute_all = True
-                # Disable manual checkpointing because we use Inductor native instead
                 model.config.use_checkpoint = False
+                if is_main:
+                    print(f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)")
 
             model = torch.compile(model, dynamic=True)
-
-            if model_cfg.use_checkpoint and inductor_config is not None and is_main:
-                print(
-                    f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
-                )
         except Exception as e:
             print(f"{get_time_info()} Failed to enable torch.compile: {e}")
             print(f"{get_time_info()} Falling back to non-compiled mode")
 
-    # Wrap model in DDP/DP
+    # Wrap compiled model in DDP/DP.
+    # ddp_model holds the DDP reference so we can set require_backward_grad_sync
+    # directly on it for gradient accumulation without using no_sync().
+    ddp_model = None
     if world_size > 1:
-        # Note: Compiling before DDP wrapping is often safer to avoid NCCL deadlocks 
-        # caused by compiled DDP collective graphs when batch shapes are dynamic across ranks.
         model = DDP(
             model,
             device_ids=[local_rank],
@@ -304,6 +321,7 @@ def _train_impl(
             broadcast_buffers=False,
             # static_graph=True, # Do not use static graph if shapes are dynamic
         )
+        ddp_model = model
         if is_main:
             print(
                 f"{get_time_info()} Using DistributedDataParallel (World Size: {world_size})"
@@ -443,16 +461,15 @@ def _train_impl(
             if num_tokens.ndim > 0:
                 num_tokens = num_tokens.sum()
 
-        # Backward pass with optional gradient synchronization
-        if world_size > 1 and (batch_idx + 1) % train_cfg.accum_steps != 0:
-            context = model.no_sync()
-        else:
-            from contextlib import nullcontext
-
-            context = nullcontext()
-
-        with context:
-            scaler.scale(loss).backward()
+        # Backward pass with optional gradient synchronization.
+        # We use require_backward_grad_sync rather than the no_sync() context manager.
+        # no_sync() is a context manager that torch.compile can trace into the graph and
+        # bake in permanently, making it ignore the flag on subsequent compiled calls.
+        # require_backward_grad_sync is a plain attribute assignment that DDP checks at
+        # runtime during the backward pass, so it works correctly with torch.compile.
+        if ddp_model is not None:
+            ddp_model.require_backward_grad_sync = (batch_idx % train_cfg.accum_steps == 0)
+        scaler.scale(loss).backward()
 
         accum_loss += loss.item()
         accum_tokens += num_tokens.item()
@@ -619,40 +636,42 @@ def _train_impl(
             get_time_info,
         )
 
-        if global_step % train_cfg.eval_steps != 0:
-            val_metrics = validate(
-                model,
-                dev_loader,
-                src_sp,
-                tgt_sp,
-                device,
-                train_cfg,
-                data_cfg,
-                model_cfg,
-                get_time_info,
-            )
-            latest_val_metrics = val_metrics
-            if is_main:
-                if run:
-                    for k, v in val_metrics.items():
-                        run.track(
-                            v,
-                            name=f"val_{k}",
-                            step=global_step,
-                            context={"subset": "dev"},
-                        )
-                if getattr(train_cfg, "save_checkpoints", True):
-                    save_checkpoint(
-                        global_step,
-                        model,
-                        optimizer,
-                        scheduler,
-                        train_cfg,
-                        get_time_info,
-                        val_metrics=val_metrics,
+    # Run final validation on ALL ranks if we haven't just validated.
+    # validate() uses dist.all_reduce internally so every rank must participate.
+    if global_step % train_cfg.eval_steps != 0:
+        val_metrics = validate(
+            model,
+            dev_loader,
+            src_sp,
+            tgt_sp,
+            device,
+            train_cfg,
+            data_cfg,
+            model_cfg,
+            get_time_info,
+        )
+        latest_val_metrics = val_metrics
+        if is_main:
+            if run:
+                for k, v in val_metrics.items():
+                    run.track(
+                        v,
+                        name=f"val_{k}",
+                        step=global_step,
+                        context={"subset": "dev"},
                     )
-            if on_eval_step is not None:
-                on_eval_step(val_metrics, global_step)
+            if getattr(train_cfg, "save_checkpoints", True):
+                save_checkpoint(
+                    global_step,
+                    model,
+                    optimizer,
+                    scheduler,
+                    train_cfg,
+                    get_time_info,
+                    val_metrics=val_metrics,
+                )
+        if on_eval_step is not None:
+            on_eval_step(val_metrics, global_step)
 
     return latest_val_metrics
 
@@ -675,9 +694,7 @@ def save_checkpoint(
 
     # Use save_model instead of save_file to handle shared tensors (tied embeddings)
     # We need to unwrap the model to get the underlying structure for save_model
-    raw_model = model.module if hasattr(model, "module") else model
-    if hasattr(raw_model, "_orig_mod"):
-        raw_model = raw_model._orig_mod
+    raw_model = unwrap_model(model)
 
     path = os.path.join(config.checkpoint_dir, f"model_{step}.safetensors")
     save_model(raw_model, path)
@@ -697,7 +714,7 @@ def save_checkpoint(
     print(f"{get_time_info()} Training state saved: {path_pt}")
 
     # If it's a quantized model, also save a converted version for inference
-    raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+    raw_model = unwrap_model(model)
     if hasattr(raw_model, "qconfig") and raw_model.qconfig is not None:
         import copy
 
@@ -805,7 +822,7 @@ def validate(
             correct_tokens += ((preds == tgt_labels) & mask_acc).sum().item()
 
             if use_autoregressive:
-                raw_model = model.module if hasattr(model, "module") else model
+                raw_model = unwrap_model(model)
                 enc = raw_model.encode(src)
                 generated_ids = raw_model.generate(
                     src,
@@ -818,13 +835,18 @@ def validate(
                 generated_ids = preds
 
             for i in range(src.size(0)):
-                ids = generated_ids[i].tolist()
-                for idx, token_id in enumerate(ids):
-                    if token_id == model_cfg.eos_id or token_id == model_cfg.pad_id:
-                        ids = ids[:idx]
-                        break
+                # Stop at EOS or PAD tokens
+                def cleanup_ids(ids_list, pad_id, eos_id):
+                    for idx, token_id in enumerate(ids_list):
+                        if token_id == eos_id or token_id == pad_id:
+                            return ids_list[:idx]
+                    return ids_list
+
+                ids = cleanup_ids(generated_ids[i].tolist(), model_cfg.pad_id, model_cfg.eos_id)
+                ref_ids = cleanup_ids(tgt[i].tolist(), model_cfg.pad_id, model_cfg.eos_id)
+
                 hyp = tgt_sp.decode(ids)
-                ref = tgt_sp.decode(tgt[i].tolist())
+                ref = tgt_sp.decode(ref_ids)
                 hypotheses.append(hyp)
                 references.append(ref)
 
@@ -875,7 +897,7 @@ def run_quick_test(
                 t_tensor = tgt[i : i + 1]
 
                 # Generate
-                raw_model = model.module if hasattr(model, "module") else model
+                raw_model = unwrap_model(model)
                 generated_ids = raw_model.generate(
                     s_tensor,
                     max_len=model_cfg.max_len,

@@ -1,7 +1,7 @@
 
 train:
-  experiment_name: "isen-test3"
-  lr: 2.0e-3
+  experiment_name: "isen-tiny-1"
+  lr: 1.5e-3
   accum_steps: 3
   warmup_steps: 5000
   max_steps: 40000
@@ -10,8 +10,8 @@ train:
   precision: "bfloat16" # or float16 with an older GPU
   enable_torch_compile: true 
   checkpoint_strategy: best
-  early_stopping_patience: 10
-  early_stopping_metric: chrf
+  early_stopping_patience: 0
+  early_stopping_metric: loss
 
 data:
   src_lang: "is"
@@ -24,17 +24,24 @@ data:
     - src_file: "quickmt-train.is-en.is"
       tgt_file: "quickmt-train.is-en.en"
       weight: 2
-      start_step: 10000 # delay starting due to being more difficult for the model to learn
-    - src_file: "finetranslations.isl_Latn-eng_Latn.isl_Latn"
-      tgt_file: "finetranslations.isl_Latn-eng_Latn.eng_Latn"
+      start_step: 5000 # delay starting due to being more difficult for the model to learn
+    - src_file: "finetranslations-sample-is-en.is"
+      tgt_file: "finetranslations-sample-is-en.en"
       weight: 1 # lower weight because it is synthetic data
       start_step: 0 # start at the beginning; synthetic data is easier for the model to learn
+      stop_step: 30000 # finish early; synthetic data unhelpful near the end
+    - src_file: "newscrawl2024-en-backtranslated-is.is"
+      tgt_file: "newscrawl2024-en-backtranslated-is.en"
+      weight: 1 # lower weight because it is synthetic data
+      start_step: 2500 # start nearthe beginning; synthetic data is easier for the model to learn
+      stop_step: 35000 # finish early; synthetic data unhelpful near the end
 
 model:
   d_model: 384
   enc_layers: 6
   dec_layers: 2
-  n_heads: 4
+  n_heads: 8
+  n_kv_heads: 2
   ffn_dim: 1536
   max_len: 256
   vocab_size_src: 10000

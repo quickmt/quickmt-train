@@ -226,46 +226,22 @@ class StreamingTextDataset(IterableDataset):
                     except Exception:
                         pass
 
-        samples = get_samples()
+        # Rolling buffer: accumulate samples and flush as full buffer_size chunks.
+        # We never block waiting for a complete buffer before yielding — instead we
+        # flush as soon as we have buffer_size samples, then keep going.  This means
+        # the worker is always producing output rather than going silent for the entire
+        # duration of a buffer fill (which previously caused all workers to stall
+        # simultaneously and drain the DataLoader prefetch queue, freezing training).
+        reservoir = []
+        for sample in get_samples():
+            reservoir.append(sample)
+            if len(reservoir) >= self.buffer_size:
+                yield from self._flush_buffer(reservoir)
+                reservoir = []
 
-        while True:
-            # 1. Fill buffer
-            buffer = list(itertools.islice(samples, self.buffer_size))
-            if not buffer:
-                break
-
-            # 2. Local shuffle for randomness
-            random.shuffle(buffer)
-
-            # 3. Sort by length to minimize padding
-            buffer.sort(key=lambda x: max(len(x[0]), len(x[1])))
-
-            # 4. Create batches based on token budget
-            batches = []
-            batch_srcs, batch_tgts = [], []
-            max_len_in_batch = 0
-
-            for s, t in buffer:
-                length = max(len(s), len(t))
-                new_max_len = max(max_len_in_batch, length)
-                new_cost = (len(batch_srcs) + 1) * new_max_len
-
-                if new_cost > self.max_tokens and batch_srcs:
-                    batches.append(self._collate(batch_srcs, batch_tgts))
-                    batch_srcs, batch_tgts = [], []
-                    max_len_in_batch = 0
-
-                batch_srcs.append(s)
-                batch_tgts.append(t)
-                max_len_in_batch = max(max_len_in_batch, length)
-
-            if batch_srcs:
-                batches.append(self._collate(batch_srcs, batch_tgts))
-
-            # 5. Shuffle the created batches to eliminate length bias
-            random.shuffle(batches)
-            for b_src, b_tgt in batches:
-                yield b_src, b_tgt
+        # Flush any remaining samples
+        if reservoir:
+            yield from self._flush_buffer(reservoir)
 
     def _collate(self, srcs, tgts):
         src_padded = torch.nn.utils.rnn.pad_sequence(
@@ -290,6 +266,36 @@ class StreamingTextDataset(IterableDataset):
         tgt_padded = pad_to_multiple(tgt_padded, self.pad_multiple, extra=0)
 
         return src_padded, tgt_padded
+
+    def _flush_buffer(self, buffer):
+        """Sort, batch, and yield all samples in buffer."""
+        # Local shuffle before sort so equal-length sentences are randomised
+        random.shuffle(buffer)
+        buffer.sort(key=lambda x: max(len(x[0]), len(x[1])))
+
+        batches = []
+        batch_srcs, batch_tgts = [], []
+        max_len_in_batch = 0
+
+        for s, t in buffer:
+            length = max(len(s), len(t))
+            new_max_len = max(max_len_in_batch, length)
+            new_cost = (len(batch_srcs) + 1) * new_max_len
+
+            if new_cost > self.max_tokens and batch_srcs:
+                batches.append(self._collate(batch_srcs, batch_tgts))
+                batch_srcs, batch_tgts = [], []
+                max_len_in_batch = 0
+
+            batch_srcs.append(s)
+            batch_tgts.append(t)
+            max_len_in_batch = max(max_len_in_batch, length)
+
+        if batch_srcs:
+            batches.append(self._collate(batch_srcs, batch_tgts))
+
+        random.shuffle(batches)
+        yield from batches
 
 
 def train_tokenizer(
@@ -575,9 +581,27 @@ def PrepareData(
         pad_id=model_cfg.pad_id,
         pad_multiple=data_cfg.pad_multiple,
         infinite=False,
+        rank=rank,
+        world_size=world_size,
     )
 
-    # 4. Loaders
+    # 4. Sanity-check: warn if any corpus is too small to feed every shard
+    total_shards = world_size * data_cfg.num_workers if data_cfg.num_workers > 0 else world_size
+    for c in data_cfg.corpora:
+        try:
+            with open(c.src_file, "r", encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+            if line_count < total_shards:
+                print(
+                    f"Warning: corpus '{c.src_file}' has only {line_count} lines "
+                    f"but {total_shards} total shards (world_size={world_size} × "
+                    f"num_workers={data_cfg.num_workers if data_cfg.num_workers > 0 else 1}). "
+                    f"Some workers will receive no data."
+                )
+        except OSError:
+            pass
+
+    # 5. Loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,
