@@ -581,6 +581,8 @@ def PrepareData(
         pad_id=model_cfg.pad_id,
         pad_multiple=data_cfg.pad_multiple,
         infinite=False,
+        rank=rank,
+        world_size=world_size,
     )
 
     # 4. Sanity-check: warn if any corpus is too small to feed every shard

@@ -835,13 +835,18 @@ def validate(
                 generated_ids = preds
 
             for i in range(src.size(0)):
-                ids = generated_ids[i].tolist()
-                for idx, token_id in enumerate(ids):
-                    if token_id == model_cfg.eos_id or token_id == model_cfg.pad_id:
-                        ids = ids[:idx]
-                        break
+                # Stop at EOS or PAD tokens
+                def cleanup_ids(ids_list, pad_id, eos_id):
+                    for idx, token_id in enumerate(ids_list):
+                        if token_id == eos_id or token_id == pad_id:
+                            return ids_list[:idx]
+                    return ids_list
+
+                ids = cleanup_ids(generated_ids[i].tolist(), model_cfg.pad_id, model_cfg.eos_id)
+                ref_ids = cleanup_ids(tgt[i].tolist(), model_cfg.pad_id, model_cfg.eos_id)
+
                 hyp = tgt_sp.decode(ids)
-                ref = tgt_sp.decode(tgt[i].tolist())
+                ref = tgt_sp.decode(ref_ids)
                 hypotheses.append(hyp)
                 references.append(ref)
 

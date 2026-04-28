@@ -40,21 +40,31 @@ Next, download some pre-processed and filtered data from Huggingface.
 hf auth login
 
 # Download training and validation data
-quickmt-dataset-to-files quickmt/quickmt-train.is-en is en
 quickmt-dataset-to-files quickmt/quickmt-valid.is-en is en
+quickmt-dataset-to-files quickmt/quickmt-train.is-en is en
+quickmt-dataset-to-files quickmt/newscrawl2024-en-backtranslated-is is en
+quickmt-dataset-to-files quickmt/finetranslations-sample-is-en is en
+# Download Flores Data
+# NOTE: You will need to log in to Huggingface nd accept the flores-plus 
+# terms of use: https://huggingface.co/datasets/openlanguagedata/flores_plus
+quickmt-flores-download isl_Latn eng_Latn
 
-# Also download synthetic finetranslations data from https://huggingface.co/datasets/HuggingFaceFW/finetranslations
-quickmt-finetranslations-download isl_Latn
+# Helper script to download and format finetranslations (https://huggingface.co/datasets/HuggingFaceFW/finetranslations) data for other languages
+# quickmt-finetranslations-download isl_Latn
 ```
 
-This will download six files into your current directory:
+This will download the following files into your current directory:
 
-* quickmt-train.is-en.is
-* quickmt-train.is-en.en
 * quickmt-valid.is-en.is
 * quickmt-valid.is-en.en
-* finetranslations.ukr_Cyrl-eng_Latn.ukr_Cyrl
-* finetranslations.ukr_Cyrl-eng_Latn.eng_Latn
+* quickmt-train.is-en.is
+* quickmt-train.is-en.en
+* newscrawl2024-en-backtranslated-is.is
+* newscrawl2024-en-backtranslated-is.en
+* finetranslations-sample-is-en.is
+* finetranslations-sample-is-en.en
+* flores_plus_eng_Latn.txt
+* flores_plus_isl_Latn.txt
 
 ## 2 - Create or Modify Config File
 
@@ -101,10 +111,10 @@ Gradient accumulation allows simulating larger batch sizes without additional GP
 Next we train our model!
 
 ```bash
-quickmt-train path/to/your/config.yaml
+quickmt-train configs/isen-tiny-1.yaml
 
 # Or, if you are lucky enough to have more than one GPU
-torchrun --nproc_per_node=2 -m quickmt_train.train path/to/your/config.yaml
+torchrun --nproc_per_node=2 -m quickmt_train.train configs/isen-tiny-1.yaml
 ```
 
 During training, the following will be created in your experiment directory (`./isen-tiny-1/`):
@@ -144,11 +154,6 @@ quickmt-export --experiment_dir ./isen-tiny-1
 ## 5 - Model Evaluation
 
 ```bash
-# Download Flores Data
-# NOTE: You will need to log in to Huggingface nd accept the flores-plus 
-# terms of use: https://huggingface.co/datasets/openlanguagedata/flores_plus
-quickmt-flores-download isl_Latn eng_Latn
-
 # Evaluate using the quickmt library: https://github.com/quickmt/quickmt
 quickmt-eval --src_file flores_plus_isl_Latn.txt --ref_file flores_plus_eng_Latn.txt --device cpu --batch_size 32 --beam_size 5 --model ./isen-tiny-1/exported_model
 ```
