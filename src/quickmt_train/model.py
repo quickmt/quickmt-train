@@ -711,14 +711,11 @@ class Seq2SeqTransformer(nn.Module):
 
             return loss, (logits, num_tokens)
         else:
-<<<<<<< HEAD
-=======
             # Optimal path for training: only project valid tokens to save GPU RAM
             outs_flat = outs[mask]
             logits_flat = self.project(outs_flat)
             tgt_out_flat = tgt_out[mask]
 
->>>>>>> ed346fa (Patch for torch compile error due to dynamic shapes and z loss + ema)
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, self.generator.out_features),
                 tgt_out.reshape(-1),
