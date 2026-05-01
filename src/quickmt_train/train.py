@@ -34,21 +34,6 @@ from .data import PrepareData
 from .model import Seq2SeqTransformer
 
 
-<<<<<<< HEAD
-def unwrap_model(model):
-    """Unwrap a model through torch.compile (_orig_mod) and DDP/DP (.module) layers."""
-    m = model
-    # Peel off compile wrapper
-    if hasattr(m, "_orig_mod"):
-        m = m._orig_mod
-    # Peel off DDP/DataParallel wrapper
-    if hasattr(m, "module"):
-        m = m.module
-    # One more compile wrapper in case compile was applied before DDP
-    if hasattr(m, "_orig_mod"):
-        m = m._orig_mod
-    return m
-=======
 class EMA:
     """
     Exponential Moving Average of model parameters.
@@ -111,7 +96,6 @@ class EMA:
         for name, shadow_param in self.shadow.items():
             if name in state_dict:
                 shadow_param.copy_(state_dict[name])
->>>>>>> 33cfffb (Add exponential moving average; add z loss)
 
 
 def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
@@ -720,31 +704,6 @@ def _train_impl(
             get_time_info,
         )
 
-<<<<<<< HEAD
-    # Run final validation on ALL ranks if we haven't just validated.
-    # validate() uses dist.all_reduce internally so every rank must participate.
-    if global_step % train_cfg.eval_steps != 0:
-        val_metrics = validate(
-            model,
-            dev_loader,
-            src_sp,
-            tgt_sp,
-            device,
-            train_cfg,
-            data_cfg,
-            model_cfg,
-            get_time_info,
-        )
-        latest_val_metrics = val_metrics
-        if is_main:
-            if run:
-                for k, v in val_metrics.items():
-                    run.track(
-                        v,
-                        name=f"val_{k}",
-                        step=global_step,
-                        context={"subset": "dev"},
-=======
         if ema is not None:
             ema.apply_shadow()
 
@@ -780,7 +739,6 @@ def _train_impl(
                         get_time_info,
                         val_metrics=val_metrics,
                         ema=ema,
->>>>>>> 33cfffb (Add exponential moving average; add z loss)
                     )
             if getattr(train_cfg, "save_checkpoints", True):
                 save_checkpoint(
