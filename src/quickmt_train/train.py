@@ -13,6 +13,13 @@ from torch.amp import GradScaler
 
 try:
     import torch._inductor.config as inductor_config
+    import torch._inductor.lowering
+    # PyTorch's Inductor compiler patch for dynamic 2D tensors.
+    # Forces 'logsumexp' to use the native ATen C++/CUDA kernel instead of
+    # a generated Triton kernel. Avoids torch compile errors.
+    if torch.ops.aten.logsumexp.default in torch._inductor.lowering.lowerings:
+        torch._inductor.lowering.lowerings[torch.ops.aten.logsumexp.default] = \
+            torch._inductor.lowering.make_fallback(torch.ops.aten.logsumexp.default)
 except ImportError:
     inductor_config = None
 
@@ -28,7 +35,7 @@ from shutil import copyfile
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from .config import CheckpointStrategy, DataConfig, EarlyStoppingMetric, ModelConfig, TrainConfig
+from .config import CheckpointStrategy, DataConfig, ModelConfig, TrainConfig
 from .checkpoint_utils import get_best_steps, extract_step
 from .data import PrepareData
 from .model import Seq2SeqTransformer
@@ -645,6 +652,9 @@ def _train_impl(
 
                 if world_size > 1: dist.all_reduce(stop_training, op=dist.ReduceOp.MAX)
                 if stop_training.item() > 0: break
+                
+                # Restore train mode after validation
+                model.train()
             if is_main and global_step % train_cfg.log_steps == 0:
                 curr_lr = optimizer.param_groups[0]["lr"]
                 elapsed = time.time() - last_log_time

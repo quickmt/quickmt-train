@@ -633,7 +633,6 @@ class Seq2SeqTransformer(nn.Module):
             torch.Tensor: Logits of shape (..., vocab_size_tgt).
         """
         return self.generator(x)
-
     def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0, z_loss_coeff=0.0):
         """
         Single training step: encode, decode, and calculate loss.
@@ -645,12 +644,12 @@ class Seq2SeqTransformer(nn.Module):
             label_smoothing (float): Label smoothing coefficient. Defaults to 0.0.
             z_loss_coeff (float): Z-loss regularization coefficient. Defaults to 0.0.
 
-    Returns:
-        If return_outputs is False:
-            tuple: (loss, num_tokens)
-        If return_outputs is True:
-            tuple: (loss, (logits, num_tokens))
-    """
+        Returns:
+            If return_outputs is False:
+                tuple: (loss, num_tokens)
+            If return_outputs is True:
+                tuple: (loss, (logits, num_tokens))
+        """
         # src: (batch, src_len)
         # tgt: (batch, tgt_len) - contains BOS and EOS
 
@@ -698,21 +697,28 @@ class Seq2SeqTransformer(nn.Module):
 
         if return_outputs:
             loss = nn.functional.cross_entropy(
-                logits.reshape(-1, self.generator.out_features),
-                tgt_out.reshape(-1),
+                logits.transpose(1, 2),
+                tgt_out,
                 ignore_index=self.config.pad_id,
                 label_smoothing=label_smoothing,
                 reduction="sum",
             )
-            
+
             if z_loss_coeff > 0:
-                # logsumexp(logits) is used for Z-loss
                 z_loss = torch.logsumexp(logits, dim=-1)
-                z_loss = (z_loss**2)[mask].sum()
-                loss += z_loss_coeff * z_loss
+                z_loss = (z_loss**2) * mask
+                loss += z_loss_coeff * z_loss.sum()
 
             return loss, (logits, num_tokens)
         else:
+<<<<<<< HEAD
+=======
+            # Optimal path for training: only project valid tokens to save GPU RAM
+            outs_flat = outs[mask]
+            logits_flat = self.project(outs_flat)
+            tgt_out_flat = tgt_out[mask]
+
+>>>>>>> ed346fa (Patch for torch compile error due to dynamic shapes and z loss + ema)
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, self.generator.out_features),
                 tgt_out.reshape(-1),
