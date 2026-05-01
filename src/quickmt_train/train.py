@@ -34,6 +34,7 @@ from .data import PrepareData
 from .model import Seq2SeqTransformer
 
 
+<<<<<<< HEAD
 def unwrap_model(model):
     """Unwrap a model through torch.compile (_orig_mod) and DDP/DP (.module) layers."""
     m = model
@@ -47,6 +48,70 @@ def unwrap_model(model):
     if hasattr(m, "_orig_mod"):
         m = m._orig_mod
     return m
+=======
+class EMA:
+    """
+    Exponential Moving Average of model parameters.
+    """
+    def __init__(self, model, decay):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        # Use the underlying model if it's wrapped in DDP or compiled
+        raw_model = model.module if hasattr(model, "module") else model
+        if hasattr(raw_model, "_orig_mod"):
+            raw_model = raw_model._orig_mod
+            
+        for name, param in raw_model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    def update(self, step=None, start_step=0):
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        if hasattr(raw_model, "_orig_mod"):
+            raw_model = raw_model._orig_mod
+
+        for name, param in raw_model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                if step is not None and step < start_step:
+                    # Sync exactly with model weights before the start step
+                    self.shadow[name].copy_(param.data)
+                else:
+                    # shadow = decay * shadow + (1 - decay) * param
+                    self.shadow[name].copy_(
+                        self.decay * self.shadow[name] + (1.0 - self.decay) * param.data
+                    )
+
+    def apply_shadow(self):
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        if hasattr(raw_model, "_orig_mod"):
+            raw_model = raw_model._orig_mod
+
+        for name, param in raw_model.named_parameters():
+            if param.requires_grad:
+                self.backup[name] = param.data.clone()
+                param.data.copy_(self.shadow[name])
+
+    def restore(self):
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        if hasattr(raw_model, "_orig_mod"):
+            raw_model = raw_model._orig_mod
+
+        for name, param in raw_model.named_parameters():
+            if param.requires_grad:
+                param.data.copy_(self.backup[name])
+        self.backup = {}
+
+    def state_dict(self):
+        return self.shadow
+
+    def load_state_dict(self, state_dict):
+        for name, shadow_param in self.shadow.items():
+            if name in state_dict:
+                shadow_param.copy_(state_dict[name])
+>>>>>>> 33cfffb (Add exponential moving average; add z loss)
 
 
 def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
@@ -390,6 +455,10 @@ def _train_impl(
                 return (train_cfg.warmup_steps**0.5) * (step**-0.5)
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    # EMA Initialization
+    ema = EMA(model, train_cfg.ema_decay) if train_cfg.use_ema else None
+    
     global_step = 0
 
     # Checkpoint loading (state)
@@ -409,6 +478,9 @@ def _train_impl(
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             global_step = checkpoint.get("step", 0)
             global_step_value.value = global_step
+            if ema is not None and "ema_state_dict" in checkpoint:
+                print(f"{get_time_info()} Resuming EMA state")
+                ema.load_state_dict(checkpoint["ema_state_dict"])
             if checkpoint.get("best_val_metric") is not None and train_cfg.early_stopping_patience > 0:
                 best_val_metric = checkpoint["best_val_metric"]
             print(f"{get_time_info()} Resumed from step {global_step}")
@@ -452,7 +524,7 @@ def _train_impl(
 
         with torch.autocast(device_type=device.type, dtype=autocast_dtype):
             loss, num_tokens = model(
-                src, tgt, label_smoothing=train_cfg.label_smoothing
+                src, tgt, label_smoothing=train_cfg.label_smoothing, z_loss_coeff=train_cfg.z_loss_coeff
             )
 
             # Handle DataParallel output (vectors per GPU)
@@ -515,6 +587,11 @@ def _train_impl(
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
+            if ema is not None:
+                ema_start = getattr(train_cfg, "ema_start_step", 0)
+                if global_step == ema_start and is_main:
+                    print(f"{get_time_info()} EMA smoothing started at step {global_step} (decay: {train_cfg.ema_decay})")
+                ema.update(step=global_step, start_step=ema_start)
             optimizer.zero_grad(set_to_none=True)
 
             last_batch_loss = accum_loss / max(1, accum_tokens)
@@ -527,6 +604,9 @@ def _train_impl(
             # Run validate() on ALL ranks (DDP requires all ranks to participate
             # in the forward pass). Only rank 0 saves checkpoints.
             if global_step % train_cfg.eval_steps == 0:
+                if ema is not None:
+                    ema.apply_shadow()
+
                 val_metrics = validate(
                     model,
                     dev_loader,
@@ -538,6 +618,9 @@ def _train_impl(
                     model_cfg,
                     get_time_info,
                 )
+                
+                if ema is not None:
+                    ema.restore()
                 latest_val_metrics = val_metrics
                 if is_main:
                     if run:
@@ -557,6 +640,7 @@ def _train_impl(
                             train_cfg,
                             get_time_info,
                             val_metrics=val_metrics,
+                            ema=ema,
                         )
                 if on_eval_step is not None:
                     on_eval_step(val_metrics, global_step)
@@ -636,6 +720,7 @@ def _train_impl(
             get_time_info,
         )
 
+<<<<<<< HEAD
     # Run final validation on ALL ranks if we haven't just validated.
     # validate() uses dist.all_reduce internally so every rank must participate.
     if global_step % train_cfg.eval_steps != 0:
@@ -659,6 +744,43 @@ def _train_impl(
                         name=f"val_{k}",
                         step=global_step,
                         context={"subset": "dev"},
+=======
+        if ema is not None:
+            ema.apply_shadow()
+
+        if global_step % train_cfg.eval_steps != 0:
+            val_metrics = validate(
+                model,
+                dev_loader,
+                src_sp,
+                tgt_sp,
+                device,
+                train_cfg,
+                data_cfg,
+                model_cfg,
+                get_time_info,
+            )
+            latest_val_metrics = val_metrics
+            if is_main:
+                if run:
+                    for k, v in val_metrics.items():
+                        run.track(
+                            v,
+                            name=f"val_{k}",
+                            step=global_step,
+                            context={"subset": "dev"},
+                        )
+                if getattr(train_cfg, "save_checkpoints", True):
+                    save_checkpoint(
+                        global_step,
+                        model,
+                        optimizer,
+                        scheduler,
+                        train_cfg,
+                        get_time_info,
+                        val_metrics=val_metrics,
+                        ema=ema,
+>>>>>>> 33cfffb (Add exponential moving average; add z loss)
                     )
             if getattr(train_cfg, "save_checkpoints", True):
                 save_checkpoint(
@@ -673,11 +795,14 @@ def _train_impl(
         if on_eval_step is not None:
             on_eval_step(val_metrics, global_step)
 
+        if ema is not None:
+            ema.restore()
+
     return latest_val_metrics
 
 
 def save_checkpoint(
-    step, model, optimizer, scheduler, config, get_time_info, val_metrics=None
+    step, model, optimizer, scheduler, config, get_time_info, val_metrics=None, ema=None
 ):
     # Ensure experiment directory exists
     os.makedirs(config.experiment_name, exist_ok=True)
@@ -700,6 +825,14 @@ def save_checkpoint(
     save_model(raw_model, path)
     print(f"{get_time_info()} Model weights saved: {path}")
 
+    if ema is not None and step >= getattr(config, 'ema_start_step', 0):
+        ema_path = os.path.join(config.checkpoint_dir, f"model_{step}_ema.safetensors")
+        # Temporarily apply EMA weights to save them
+        ema.apply_shadow()
+        save_model(raw_model, ema_path)
+        ema.restore()
+        print(f"{get_time_info()} EMA weights saved: {ema_path}")
+
     # Save full state (optimizer, scheduler) in .pt for resuming
     path_pt = os.path.join(config.checkpoint_dir, f"checkpoint_{step}.pt")
     torch.save(
@@ -707,6 +840,7 @@ def save_checkpoint(
             "step": step,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "ema_state_dict": ema.state_dict() if ema is not None else None,
             "best_val_metric": val_metrics.get(config.early_stopping_metric.value) if val_metrics else None,
         },
         path_pt,
@@ -731,7 +865,8 @@ def save_checkpoint(
     checkpoints_pt = sorted(
         [f for f in all_files if f.startswith("checkpoint_")], key=extract_step
     )
-    models_st = sorted([f for f in all_files if f.startswith("model_") and f.endswith(".safetensors")], key=extract_step)
+    models_st = sorted([f for f in all_files if f.startswith("model_") and f.endswith(".safetensors") and "_ema" not in f], key=extract_step)
+    emas_st = sorted([f for f in all_files if f.startswith("model_") and f.endswith("_ema.safetensors")], key=extract_step)
 
     if config.checkpoint_strategy == CheckpointStrategy.BEST:
         metrics_path = os.path.join(config.experiment_name, "metrics.jsonl")
@@ -757,6 +892,13 @@ def save_checkpoint(
                 if extract_step(model_file) not in keep_steps:
                     os.remove(os.path.join(config.checkpoint_dir, model_file))
                     print(f"{get_time_info()} Removed old weights (not in top-{config.max_checkpoints}): {model_file}")
+            
+            for ema_file in emas_st:
+                if extract_step(ema_file) not in keep_steps:
+                    os.remove(os.path.join(config.checkpoint_dir, ema_file))
+                    print(f"{get_time_info()} Removed old EMA weights (not in top-{config.max_checkpoints}): {ema_file}")
+            
+
     else:
         if len(checkpoints_pt) > config.max_checkpoints:
             os.remove(os.path.join(config.checkpoint_dir, checkpoints_pt[0]))
@@ -764,6 +906,10 @@ def save_checkpoint(
         if len(models_st) > config.max_checkpoints:
             os.remove(os.path.join(config.checkpoint_dir, models_st[0]))
             print(f"{get_time_info()} Removed old weights: {models_st[0]}")
+        if len(emas_st) > config.max_checkpoints:
+            os.remove(os.path.join(config.checkpoint_dir, emas_st[0]))
+            print(f"{get_time_info()} Removed old EMA weights: {emas_st[0]}")
+
 
 
 def validate(

@@ -156,11 +156,17 @@ class TrainConfig:
     # Optimizer
     lr: float = 1.0e-3
     weight_decay: float = 0.01
-    weight_decay_embeddings: bool = True
+    weight_decay_embeddings: bool = False
     adam_eps: float = 1e-6
     label_smoothing: float = 0.1
     adam_beta1: float = 0.9
     adam_beta2: float = 0.998
+    z_loss_coeff: float = 1e-4
+
+    # EMA
+    use_ema: bool = True
+    ema_decay: float = 0.9999
+    ema_start_step: int = 0
 
     # Scheduler
     scheduler_type: SchedulerType = SchedulerType.INV_SQRT
@@ -177,7 +183,7 @@ class TrainConfig:
     checkpoint_strategy: CheckpointStrategy = CheckpointStrategy.BEST
 
     # Early Stopping
-    early_stopping_patience: int = 10
+    early_stopping_patience: int = 0
     early_stopping_metric: EarlyStoppingMetric = EarlyStoppingMetric.CHRF
 
     # Hardware & Performance
@@ -208,9 +214,10 @@ class ExportConfig:
 
     # Averaging
     k: int = 5
+    ignore_ema: bool = False
 
     # Quantization
-    quantization: QuantizationType = QuantizationType.INT8
+    quantization: QuantizationType = QuantizationType.BFLOAT16
 
     # Inference Defaults
     beam_size: int = 5

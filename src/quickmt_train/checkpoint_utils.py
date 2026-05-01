@@ -6,7 +6,7 @@ def extract_step(filename):
     """
     Extracts the step number from a filename like model_1000.safetensors or checkpoint_1000.pt
     """
-    match = re.search(r'_(\d+)\.', filename)
+    match = re.search(r'_(\d+)(?:_ema)?\.', filename)
     if match:
         return int(match.group(1))
     return -1

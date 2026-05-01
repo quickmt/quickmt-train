@@ -634,7 +634,7 @@ class Seq2SeqTransformer(nn.Module):
         """
         return self.generator(x)
 
-    def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0):
+    def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0, z_loss_coeff=0.0):
         """
         Single training step: encode, decode, and calculate loss.
 
@@ -643,13 +643,14 @@ class Seq2SeqTransformer(nn.Module):
             tgt (torch.Tensor): Target sequences (including BOS and EOS).
             return_outputs (bool): Whether to return logits and num_tokens. Defaults to False.
             label_smoothing (float): Label smoothing coefficient. Defaults to 0.0.
+            z_loss_coeff (float): Z-loss regularization coefficient. Defaults to 0.0.
 
-        Returns:
-            If return_outputs is False:
-                tuple: (loss, num_tokens)
-            If return_outputs is True:
-                tuple: (loss, (logits, num_tokens))
-        """
+    Returns:
+        If return_outputs is False:
+            tuple: (loss, num_tokens)
+        If return_outputs is True:
+            tuple: (loss, (logits, num_tokens))
+    """
         # src: (batch, src_len)
         # tgt: (batch, tgt_len) - contains BOS and EOS
 
@@ -703,6 +704,13 @@ class Seq2SeqTransformer(nn.Module):
                 label_smoothing=label_smoothing,
                 reduction="sum",
             )
+            
+            if z_loss_coeff > 0:
+                # logsumexp(logits) is used for Z-loss
+                z_loss = torch.logsumexp(logits, dim=-1)
+                z_loss = (z_loss**2)[mask].sum()
+                loss += z_loss_coeff * z_loss
+
             return loss, (logits, num_tokens)
         else:
             loss = nn.functional.cross_entropy(
@@ -712,6 +720,12 @@ class Seq2SeqTransformer(nn.Module):
                 label_smoothing=label_smoothing,
                 reduction="sum",
             )
+
+            if z_loss_coeff > 0:
+                z_loss = torch.logsumexp(logits_flat, dim=-1)
+                z_loss = (z_loss**2).sum()
+                loss += z_loss_coeff * z_loss
+
             return loss, num_tokens
 
     @torch.no_grad()
