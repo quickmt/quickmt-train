@@ -44,9 +44,7 @@ def convert(
         raise FileExistsError(f"Source file {src_output_file} exists - will not remove")
 
     if tgt_output_file.exists():
-        raise FileExistsError(
-            f"Target file {tgt_output_file} exists - will not remove"
-        )
+        raise FileExistsError(f"Target file {tgt_output_file} exists - will not remove")
 
     line_counter = 0
 

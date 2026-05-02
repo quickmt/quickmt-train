@@ -6,28 +6,34 @@ import os
 class StrEnum(str, Enum):
     pass
 
+
 class ActivationType(StrEnum):
     GELU = "gelu"
     RELU = "relu"
     SWIGLU = "swiglu"
     SILU = "silu"
 
+
 class MLPType(StrEnum):
     STANDARD = "standard"
     GATED = "gated"
+
 
 class NormType(StrEnum):
     LAYERNORM = "layernorm"
     RMSNORM = "rmsnorm"
 
+
 class SchedulerType(StrEnum):
     INV_SQRT = "inv_sqrt"
     COSINE = "cosine"
+
 
 class DeviceType(StrEnum):
     CUDA = "cuda"
     CPU = "cpu"
     AUTO = "auto"
+
 
 class PrecisionType(StrEnum):
     BF16 = "bf16"
@@ -37,9 +43,11 @@ class PrecisionType(StrEnum):
     FP32 = "fp32"
     FLOAT32 = "float32"
 
+
 class CheckpointStrategy(StrEnum):
     RECENT = "recent"
     BEST = "best"
+
 
 class EarlyStoppingMetric(StrEnum):
     LOSS = "loss"
@@ -51,6 +59,7 @@ class EarlyStoppingMetric(StrEnum):
     @property
     def lower_is_better(self) -> bool:
         return self in (EarlyStoppingMetric.LOSS, EarlyStoppingMetric.PPL)
+
 
 class QuantizationType(StrEnum):
     INT8 = "int8"
@@ -254,7 +263,7 @@ def _from_dict(cls, d):
     for k, v in d.items():
         if k not in valid_fields:
             raise ValueError(f"Invalid key '{k}' for config {cls.__name__}")
-            
+
         field_type = valid_fields[k]
         if k == "corpora" and isinstance(v, list):
             kwargs[k] = [CorpusConfig(**c) if isinstance(c, dict) else c for c in v]
@@ -263,7 +272,9 @@ def _from_dict(cls, d):
                 kwargs[k] = field_type(v)
             except ValueError:
                 valid_vals = [e.value for e in field_type]
-                raise ValueError(f"Invalid value '{v}' for {k} in {cls.__name__}. Expected one of {valid_vals}")
+                raise ValueError(
+                    f"Invalid value '{v}' for {k} in {cls.__name__}. Expected one of {valid_vals}"
+                )
         else:
             kwargs[k] = v
     return cls(**kwargs)
@@ -281,7 +292,9 @@ def load_config(path: str):
     valid_top_level = {"model", "data", "train", "export"}
     for k in cfg.keys():
         if k not in valid_top_level:
-            raise ValueError(f"Invalid top-level section '{k}' in config file. Expected one of {valid_top_level}")
+            raise ValueError(
+                f"Invalid top-level section '{k}' in config file. Expected one of {valid_top_level}"
+            )
 
     model_config = _from_dict(ModelConfig, cfg.get("model", {}))
     data_config = _from_dict(DataConfig, cfg.get("data", {}))

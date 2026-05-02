@@ -72,6 +72,7 @@ def benchmark(model_cfg=None, data_cfg=None, train_cfg=None):
 
 def main():
     import fire
+
     fire.Fire(benchmark_cli)
 
 

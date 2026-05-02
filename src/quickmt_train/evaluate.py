@@ -48,7 +48,9 @@ def evaluate_cli(
                     setattr(cfg, key, value)
                     found = True
             if not found:
-                print(f"Warning: Configuration key '{key}' not found in any config object.")
+                print(
+                    f"Warning: Configuration key '{key}' not found in any config object."
+                )
 
         if src_file is None:
             src_file = data_cfg.src_dev_path
@@ -72,9 +74,7 @@ def evaluate_cli(
     print(f"Using device: {device}")
 
     # Load config and model
-    translator = Translator(
-        model_path=model, device=device, compute_type=compute_type
-    )
+    translator = Translator(model_path=model, device=device, compute_type=compute_type)
 
     # Load data
     with open(src_file, "r", encoding="utf-8") as f:
@@ -89,9 +89,7 @@ def evaluate_cli(
 
     print(f"Translating {len(src_lines)} lines...")
     t1 = time()
-    hypotheses = translator(
-        src_lines, beam_size=beam_size, max_batch_size=batch_size
-    )
+    hypotheses = translator(src_lines, beam_size=beam_size, max_batch_size=batch_size)
     t2 = time()
     print(f"Translation time: {(t2 - t1):.2f} seconds")
 

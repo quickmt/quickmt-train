@@ -62,14 +62,14 @@ class StreamingTextDataset(IterableDataset):
                 f_src = open(c.src_file, "r", encoding="utf-8")
                 f_tgt = open(c.tgt_file, "r", encoding="utf-8")
                 pair_iter = zip(f_src, f_tgt)
-                
+
                 # Partition across DDP ranks and DataLoader workers
                 num_workers = worker_info.num_workers if worker_info is not None else 1
                 worker_id = worker_info.id if worker_info is not None else 0
-                
+
                 total_shards = self.world_size * num_workers
                 global_worker_id = self.rank * num_workers + worker_id
-                
+
                 pair_iter = itertools.islice(
                     pair_iter, global_worker_id, None, total_shards
                 )
@@ -402,31 +402,42 @@ def prepare_dev_sample(src_dev_path, tgt_dev_path, experiment_name, val_max_samp
     sample_tgt_path = os.path.join(experiment_name, "dev_sample.tgt")
 
     if os.path.exists(sample_src_path) and os.path.exists(sample_tgt_path):
-        print(f"Dev sample files already exist, reusing: {sample_src_path}, {sample_tgt_path}")
+        print(
+            f"Dev sample files already exist, reusing: {sample_src_path}, {sample_tgt_path}"
+        )
         return sample_src_path, sample_tgt_path
 
-    with open(src_dev_path, "r", encoding="utf-8") as f_src, \
-         open(tgt_dev_path, "r", encoding="utf-8") as f_tgt:
+    with (
+        open(src_dev_path, "r", encoding="utf-8") as f_src,
+        open(tgt_dev_path, "r", encoding="utf-8") as f_tgt,
+    ):
         src_lines = f_src.readlines()
         tgt_lines = f_tgt.readlines()
 
-    assert len(src_lines) == len(tgt_lines), \
-        f"Dev file line count mismatch: {src_dev_path} ({len(src_lines)}) vs {tgt_dev_path} ({len(tgt_lines)})"
+    assert len(src_lines) == len(
+        tgt_lines
+    ), f"Dev file line count mismatch: {src_dev_path} ({len(src_lines)}) vs {tgt_dev_path} ({len(tgt_lines)})"
 
     if len(src_lines) <= val_max_samples:
-        print(f"Dev set ({len(src_lines)} lines) <= val_max_samples ({val_max_samples}), using full dev set")
+        print(
+            f"Dev set ({len(src_lines)} lines) <= val_max_samples ({val_max_samples}), using full dev set"
+        )
         return src_dev_path, tgt_dev_path
 
     indices = random.sample(range(len(src_lines)), val_max_samples)
     indices.sort()
 
-    with open(sample_src_path, "w", encoding="utf-8") as f_src, \
-         open(sample_tgt_path, "w", encoding="utf-8") as f_tgt:
+    with (
+        open(sample_src_path, "w", encoding="utf-8") as f_src,
+        open(sample_tgt_path, "w", encoding="utf-8") as f_tgt,
+    ):
         for i in indices:
             f_src.write(src_lines[i])
             f_tgt.write(tgt_lines[i])
 
-    print(f"Wrote {val_max_samples} dev sample lines to {sample_src_path}, {sample_tgt_path}")
+    print(
+        f"Wrote {val_max_samples} dev sample lines to {sample_src_path}, {sample_tgt_path}"
+    )
     return sample_src_path, sample_tgt_path
 
 
@@ -443,25 +454,30 @@ def PrepareData(
 
     if model_cfg.joint_vocab:
         vocab_size_src = vocab_size_tgt = max(vocab_size_src, vocab_size_tgt)
-        model_prefix_src = model_prefix_tgt = os.path.join(data_cfg.experiment_name, "tokenizer_joint")
-        
+        model_prefix_src = model_prefix_tgt = os.path.join(
+            data_cfg.experiment_name, "tokenizer_joint"
+        )
+
         # If joint tokenizer needed
         if not os.path.exists(f"{model_prefix_src}.model"):
             print("Training Joint Tokenizer...")
             joint_file = os.path.join(data_cfg.experiment_name, "joint_corpus.txt")
-            
+
             import random
+
             # Determine total files to sample from
-            files_to_sample = [c.src_file for c in data_cfg.corpora] + [c.tgt_file for c in data_cfg.corpora]
+            files_to_sample = [c.src_file for c in data_cfg.corpora] + [
+                c.tgt_file for c in data_cfg.corpora
+            ]
             files_to_sample = [f for f in files_to_sample if os.path.exists(f)]
-            
+
             if not files_to_sample:
                 raise FileNotFoundError("No corpus files found for tokenizer training")
 
             # Calculate lines per file to ensure total sample size matches
             target_total_lines = data_cfg.input_sentence_size
             lines_per_file = target_total_lines // len(files_to_sample)
-            
+
             with open(joint_file, "w", encoding="utf-8") as f_out:
                 for f_path in files_to_sample:
                     with open(f_path, "r", encoding="utf-8") as f_in:
@@ -474,10 +490,10 @@ def PrepareData(
                                 j = random.randint(0, i)
                                 if j < lines_per_file:
                                     reservoir[j] = line
-                        
+
                         for line in reservoir:
                             f_out.write(line)
-            
+
             train_tokenizer(
                 joint_file,
                 model_prefix_src,
@@ -492,8 +508,15 @@ def PrepareData(
             # Link to tgt
             if not os.path.exists(f"{data_cfg.tokenizer_prefix_tgt}.model"):
                 import shutil
-                shutil.copy(f"{model_prefix_src}.model", f"{data_cfg.tokenizer_prefix_tgt}.model")
-                shutil.copy(f"{model_prefix_src}.vocab", f"{data_cfg.tokenizer_prefix_tgt}.vocab")
+
+                shutil.copy(
+                    f"{model_prefix_src}.model",
+                    f"{data_cfg.tokenizer_prefix_tgt}.model",
+                )
+                shutil.copy(
+                    f"{model_prefix_src}.vocab",
+                    f"{data_cfg.tokenizer_prefix_tgt}.vocab",
+                )
 
     os.makedirs(data_cfg.experiment_name, exist_ok=True)
 
@@ -568,9 +591,7 @@ def PrepareData(
         data_cfg.experiment_name,
         train_cfg.val_max_samples,
     )
-    dev_corpora = [
-        CorpusConfig(src_file=dev_src_path, tgt_file=dev_tgt_path)
-    ]
+    dev_corpora = [CorpusConfig(src_file=dev_src_path, tgt_file=dev_tgt_path)]
     dev_dataset = StreamingTextDataset(
         dev_corpora,
         src_sp,
@@ -586,7 +607,9 @@ def PrepareData(
     )
 
     # 4. Sanity-check: warn if any corpus is too small to feed every shard
-    total_shards = world_size * data_cfg.num_workers if data_cfg.num_workers > 0 else world_size
+    total_shards = (
+        world_size * data_cfg.num_workers if data_cfg.num_workers > 0 else world_size
+    )
     for c in data_cfg.corpora:
         try:
             with open(c.src_file, "r", encoding="utf-8") as f:
@@ -617,6 +640,8 @@ def PrepareData(
     )
 
     return train_loader, dev_loader, src_sp, tgt_sp
+
+
 def data_cli(config: str, **kwargs):
     """
     Data preparation CLI - primarily for training tokenizers.
@@ -648,4 +673,5 @@ def main():
 
 if __name__ == "__main__":
     import fire
+
     main()

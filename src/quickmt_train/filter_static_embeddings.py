@@ -94,8 +94,10 @@ def static_filter(
     print(f"Good line count: {good_count}")
     print(f"Bad line count: {bad_count}")
 
+
 def main():
     Fire(static_filter)
+
 
 if __name__ == "__main__":
     main()

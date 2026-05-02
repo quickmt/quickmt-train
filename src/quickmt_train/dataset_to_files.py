@@ -41,9 +41,10 @@ def convert(
 
     # 3. Use a batched writing function
     def write_batches(batch):
-        with open(src_filename, "a", encoding="utf-8") as f_src, open(
-            tgt_filename, "a", encoding="utf-8"
-        ) as f_tgt:
+        with (
+            open(src_filename, "a", encoding="utf-8") as f_src,
+            open(tgt_filename, "a", encoding="utf-8") as f_tgt,
+        ):
             if len(batch) > 0:
                 f_src.write("\n".join(batch[src_lang]) + "\n")
                 f_tgt.write("\n".join(batch[tgt_lang]) + "\n")

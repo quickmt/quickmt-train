@@ -22,7 +22,7 @@ def corpus_to_hf(dataset_key, src_in: str, tgt_in: str, src_lang: str, tgt_lang:
         },
     )
 
-    dataset.push_to_hub(dataset_key) # type: ignore
+    dataset.push_to_hub(dataset_key)  # type: ignore
 
 
 def main():

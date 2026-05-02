@@ -22,19 +22,21 @@ def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
         metrics_path,
         train_cfg.early_stopping_metric.value,
         train_cfg.early_stopping_metric.lower_is_better,
-        export_cfg.k
+        export_cfg.k,
     )
 
     if best_steps:
         selected = [f"model_{step}.safetensors" for step in best_steps]
         # Prefer EMA weights if they exist
         selected_ema = [f"model_{step}_ema.safetensors" for step in best_steps]
-        
+
         # Verify files exist
         actual_files = []
         use_ema = True
         for ema_f, std_f in zip(selected_ema, selected):
-            if not getattr(export_cfg, "ignore_ema", False) and os.path.exists(os.path.join(train_cfg.checkpoint_dir, ema_f)):
+            if not getattr(export_cfg, "ignore_ema", False) and os.path.exists(
+                os.path.join(train_cfg.checkpoint_dir, ema_f)
+            ):
                 actual_files.append(ema_f)
             elif os.path.exists(os.path.join(train_cfg.checkpoint_dir, std_f)):
                 actual_files.append(std_f)
@@ -44,13 +46,17 @@ def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
                     print(f"Warning: Neither {ema_f} nor {std_f} found.")
                 else:
                     print(f"Warning: {std_f} not found.")
-        
+
         selected = actual_files
         if selected:
             if use_ema:
-                print(f"Selected {len(selected)} best EMA checkpoints based on {train_cfg.early_stopping_metric.value}.")
+                print(
+                    f"Selected {len(selected)} best EMA checkpoints based on {train_cfg.early_stopping_metric.value}."
+                )
             else:
-                print(f"Selected {len(selected)} best checkpoints (mixed EMA/standard) based on {train_cfg.early_stopping_metric.value}.")
+                print(
+                    f"Selected {len(selected)} best checkpoints (mixed EMA/standard) based on {train_cfg.early_stopping_metric.value}."
+                )
     else:
         print(
             f"No suitable metrics found in {metrics_path}. Falling back to last k checkpoints."

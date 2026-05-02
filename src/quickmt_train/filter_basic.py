@@ -185,7 +185,7 @@ def clean(
 ):
     """Remove non-printable characters and filter out if char length ratio > `length_ratio`"""
     # https://stackoverflow.com/questions/66353366/cant-suppress-fasttext-warning-load-model-does-not-return
-    fasttext.FastText.eprint = lambda x: None # type: ignore
+    fasttext.FastText.eprint = lambda x: None  # type: ignore
     ft = fasttext.load_model(ft_model_path)
 
     for line in sys.stdin:
@@ -210,7 +210,6 @@ def clean(
         )
         if cleaned_input:
             sys.stdout.write(cleaned_input)
-
 
 
 def main():

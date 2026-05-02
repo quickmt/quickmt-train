@@ -3,6 +3,7 @@ import os
 import time
 import json
 from datetime import datetime, timedelta
+import itertools
 
 import sacrebleu
 import torch
@@ -16,7 +17,10 @@ try:
     import torch._inductor.lowering
 
     # PyTorch's Inductor compiler patch for dynamic 2D tensors.
-    if torch.ops.aten.logsumexp.default in torch._inductor.lowering.lowerings:
+    if (
+        hasattr(torch.ops.aten.logsumexp, "default")
+        and torch.ops.aten.logsumexp.default in torch._inductor.lowering.lowerings
+    ):
         torch._inductor.lowering.lowerings[torch.ops.aten.logsumexp.default] = (
             torch._inductor.lowering.make_fallback(torch.ops.aten.logsumexp.default)
         )
@@ -57,8 +61,10 @@ class EMA:
         if hasattr(raw_model, "_orig_mod"):
             raw_model = raw_model._orig_mod
 
-        for name, param in raw_model.named_parameters():
-            if param.requires_grad:
+        for name, param in itertools.chain(
+            raw_model.named_parameters(), raw_model.named_buffers()
+        ):
+            if param.requires_grad or name in self.shadow:
                 self.shadow[name] = param.data.clone()
 
     def update(self, step=None, start_step=0):
@@ -66,8 +72,10 @@ class EMA:
         if hasattr(raw_model, "_orig_mod"):
             raw_model = raw_model._orig_mod
 
-        for name, param in raw_model.named_parameters():
-            if param.requires_grad:
+        for name, param in itertools.chain(
+            raw_model.named_parameters(), raw_model.named_buffers()
+        ):
+            if param.requires_grad or name in self.shadow:
                 assert name in self.shadow
                 if step is not None and step < start_step:
                     # Sync exactly with model weights before the start step
@@ -83,8 +91,10 @@ class EMA:
         if hasattr(raw_model, "_orig_mod"):
             raw_model = raw_model._orig_mod
 
-        for name, param in raw_model.named_parameters():
-            if param.requires_grad:
+        for name, param in itertools.chain(
+            raw_model.named_parameters(), raw_model.named_buffers()
+        ):
+            if param.requires_grad or name in self.shadow:
                 self.backup[name] = param.data.clone()
                 param.data.copy_(self.shadow[name])
 
@@ -93,10 +103,12 @@ class EMA:
         if hasattr(raw_model, "_orig_mod"):
             raw_model = raw_model._orig_mod
 
-        for name, param in raw_model.named_parameters():
-            if param.requires_grad:
+        for name, param in itertools.chain(
+            raw_model.named_parameters(), raw_model.named_buffers()
+        ):
+            if param.requires_grad or name in self.shadow:
                 param.data.copy_(self.backup[name])
-        self.backup = {}
+        self.backup.clear()
 
     def state_dict(self):
         return self.shadow
@@ -289,6 +301,20 @@ def _train_impl(
         torch.backends.cudnn.allow_tf32 = train_cfg.tf32
         if train_cfg.tf32:
             torch.set_float32_matmul_precision("high")
+
+    # Disable specific Inductor features that cause SymPy AssertionErrors
+    # with dynamic shapes in certain PyTorch versions.
+    if train_cfg.enable_torch_compile and inductor_config is not None:
+        inductor_config.coordinate_descent_tuning = False
+        inductor_config.coordinate_descent_check_all_directions = False
+        # Disable memory coalescing analysis in Triton tiling
+        if hasattr(inductor_config, "triton"):
+            inductor_config.triton.coalesce_tiling_analysis = False
+
+        if is_main:
+            print(
+                f"{get_time_info()} Applied Inductor config patches for stability (including Triton tiling bypass)"
+            )
 
     if is_main:
         # Remove metrics file if exists

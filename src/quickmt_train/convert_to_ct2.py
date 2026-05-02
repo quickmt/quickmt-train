@@ -95,8 +95,10 @@ def _make_sinusoidal_position_encodings(max_len, d_model):
 
 def set_multihead_attention(spec, state_dict, prefix, self_attention=True):
     """Set weights for a CT2 MultiHeadAttentionSpec from PyTorch MultiheadAttention or GroupedQueryAttention."""
+
     def to_numpy(t):
-        if t is None: return None
+        if t is None:
+            return None
         return t.detach().float().cpu().numpy() if hasattr(t, "detach") else t.numpy()
 
     q_proj_weight = state_dict.get(f"{prefix}.q_proj.weight")
@@ -116,8 +118,10 @@ def set_multihead_attention(spec, state_dict, prefix, self_attention=True):
             if qb is not None:
                 spec.linear[0].bias = np.concatenate([qb, kb, vb], axis=0)
             else:
-                spec.linear[0].bias = np.zeros(q.shape[0] + k.shape[0] + v.shape[0], dtype=np.float32)
-                
+                spec.linear[0].bias = np.zeros(
+                    q.shape[0] + k.shape[0] + v.shape[0], dtype=np.float32
+                )
+
             spec.linear[1].weight = out_w
             if out_b is not None:
                 spec.linear[1].bias = out_b
@@ -129,13 +133,15 @@ def set_multihead_attention(spec, state_dict, prefix, self_attention=True):
                 spec.linear[0].bias = qb
             else:
                 spec.linear[0].bias = np.zeros(q.shape[0], dtype=np.float32)
-                
+
             spec.linear[1].weight = np.concatenate([k, v], axis=0)
             if kb is not None:
                 spec.linear[1].bias = np.concatenate([kb, vb], axis=0)
             else:
-                spec.linear[1].bias = np.zeros(k.shape[0] + v.shape[0], dtype=np.float32)
-                
+                spec.linear[1].bias = np.zeros(
+                    k.shape[0] + v.shape[0], dtype=np.float32
+                )
+
             spec.linear[2].weight = out_w
             if out_b is not None:
                 spec.linear[2].bias = out_b
@@ -237,23 +243,31 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
 
     if os.path.exists(model_file):
         if no_clobber:
-            print(f"Averaged model {model_file} already exists. Skipping averaging due to --no_clobber.")
+            print(
+                f"Averaged model {model_file} already exists. Skipping averaging due to --no_clobber."
+            )
             state_dict = load_file(model_file, device="cpu")
         else:
             print(f"Averaged model {model_file} already exists. Overwriting...")
-            state_dict = get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg)
+            state_dict = get_averaged_state_dict(
+                experiment_dir, model_cfg, train_cfg, export_cfg
+            )
     else:
-        state_dict = get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg)
+        state_dict = get_averaged_state_dict(
+            experiment_dir, model_cfg, train_cfg, export_cfg
+        )
 
     if state_dict is None:
         # Fallback if averaging failed or returned nothing
-        print("Averaging failed to produce a state dict. Attempting to load existing averaged model or last checkpoint.")
+        print(
+            "Averaging failed to produce a state dict. Attempting to load existing averaged model or last checkpoint."
+        )
         if os.path.exists(model_file):
-             state_dict = load_file(model_file, device="cpu")
+            state_dict = load_file(model_file, device="cpu")
         else:
             checkpoints = sorted(
-                list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors")) +
-                list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
+                list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors"))
+                + list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
             )
             if checkpoints:
                 model_file = str(checkpoints[-1])
@@ -281,7 +295,9 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
 
     is_gated = getattr(model_cfg, "mlp_type", "standard") == "gated"
     use_rms_norm = getattr(model_cfg, "norm_type", "layernorm") == "rmsnorm"
-    tie_decoder_embeddings = getattr(model_cfg, "tie_decoder_embeddings", False) or getattr(model_cfg, "joint_vocab", False)
+    tie_decoder_embeddings = getattr(
+        model_cfg, "tie_decoder_embeddings", False
+    ) or getattr(model_cfg, "joint_vocab", False)
 
     enc_kwargs = dict(
         num_layers=model_cfg.enc_layers,
@@ -328,7 +344,7 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
             if hasattr(tgt_emb, "detach")
             else tgt_emb.numpy()
         )
-    
+
     # If shared (like in some architectures), ensure both are populated
     if tie_decoder_embeddings and encoder_spec.embeddings[0].weight is None:
         encoder_spec.embeddings[0].weight = decoder_spec.embeddings.weight
@@ -351,8 +367,8 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
         # If tied, projection is just a reuse of embeddings; we must ensure
         # that embeddings are already populated.
         if decoder_spec.embeddings.weight is not None:
-             decoder_spec.projection.weight = decoder_spec.embeddings.weight
-        
+            decoder_spec.projection.weight = decoder_spec.embeddings.weight
+
         _, gen_bias = get_layer_weights(state_dict, "generator")
         if gen_bias is not None:
             decoder_spec.projection.bias = gen_bias
@@ -491,7 +507,9 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
     # Copy Tokenizers to output directory
     if model_cfg.joint_vocab:
         # Use the explicit path created in data.py: experiment_dir / "tokenizer_joint.model"
-        tokenizer_model = os.path.join(data_cfg.experiment_name, "tokenizer_joint.model")
+        tokenizer_model = os.path.join(
+            data_cfg.experiment_name, "tokenizer_joint.model"
+        )
         shutil.copy(
             tokenizer_model,
             Path(export_cfg.output_dir) / "joint.spm.model",

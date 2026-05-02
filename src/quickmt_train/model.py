@@ -153,7 +153,16 @@ class GroupedQueryAttention(nn.Module):
     """
     Grouped Query Attention module matching the interface of nn.MultiheadAttention.
     """
-    def __init__(self, d_model, num_heads, num_heads_kv, dropout=0.1, bias=False, batch_first=True):
+
+    def __init__(
+        self,
+        d_model,
+        num_heads,
+        num_heads_kv,
+        dropout=0.1,
+        bias=False,
+        batch_first=True,
+    ):
         super().__init__()
         assert batch_first, "Only batch_first=True is supported"
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -162,7 +171,7 @@ class GroupedQueryAttention(nn.Module):
         self.num_heads_kv = num_heads_kv
         self.d_model = d_model
         self.batch_first = batch_first
-        
+
         self.q_proj = nn.Linear(d_model, num_heads * self.head_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
         self.v_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
@@ -209,7 +218,12 @@ class GroupedQueryAttention(nn.Module):
 
             if key_padding_mask is not None:
                 # True = ignore
-                km = key_padding_mask.to(torch.bool).logical_not().unsqueeze(1).unsqueeze(2)
+                km = (
+                    key_padding_mask.to(torch.bool)
+                    .logical_not()
+                    .unsqueeze(1)
+                    .unsqueeze(2)
+                )
                 if m is not None:
                     # combine bool masks
                     if m.dtype == torch.bool and km.dtype == torch.bool:
@@ -222,15 +236,21 @@ class GroupedQueryAttention(nn.Module):
             is_causal = False
 
         out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=mask,
             dropout_p=self.dropout_p if self.training else 0.0,
-            is_causal=is_causal
+            is_causal=is_causal,
         )
 
-        out = out.transpose(1, 2).contiguous().view(bsz, q_len, self.num_heads * self.head_dim)
+        out = (
+            out.transpose(1, 2)
+            .contiguous()
+            .view(bsz, q_len, self.num_heads * self.head_dim)
+        )
         out = self.out_proj(out)
-        
+
         return out, None
 
 
@@ -265,7 +285,12 @@ class EncoderLayer(nn.Module):
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
-            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+            d_model,
+            nhead,
+            n_kv_heads or nhead,
+            dropout=dropout,
+            bias=bias,
+            batch_first=True,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -335,10 +360,20 @@ class DecoderLayer(nn.Module):
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
-            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+            d_model,
+            nhead,
+            n_kv_heads or nhead,
+            dropout=dropout,
+            bias=bias,
+            batch_first=True,
         )
         self.multihead_attn = GroupedQueryAttention(
-            d_model, nhead, n_kv_heads or nhead, dropout=dropout, bias=bias, batch_first=True
+            d_model,
+            nhead,
+            n_kv_heads or nhead,
+            dropout=dropout,
+            bias=bias,
+            batch_first=True,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -431,7 +466,7 @@ class Seq2SeqTransformer(nn.Module):
         if config.joint_vocab:
             # Share embedding weights if joint vocabulary is used
             self.src_tok_emb.embedding.weight = self.tgt_tok_emb.embedding.weight
-        
+
         self.positional_encoding = PositionalEncoding(
             config.d_model, dropout=config.dropout, max_len=config.max_len
         )
@@ -446,7 +481,7 @@ class Seq2SeqTransformer(nn.Module):
             bias=config.ff_bias,
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
-            n_kv_heads=getattr(config, 'n_kv_heads', None),
+            n_kv_heads=getattr(config, "n_kv_heads", None),
         )
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -466,7 +501,7 @@ class Seq2SeqTransformer(nn.Module):
             bias=config.ff_bias,
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
-            n_kv_heads=getattr(config, 'n_kv_heads', None),
+            n_kv_heads=getattr(config, "n_kv_heads", None),
         )
         self.decoder = nn.TransformerDecoder(
             decoder_layer,
@@ -495,7 +530,10 @@ class Seq2SeqTransformer(nn.Module):
         if isinstance(module, nn.Linear):
             # If weights are tied, the generator weight is just a pointer to embeddings.
             # We skip re-initializing it here to preserve the embedding stats.
-            if not ((self.config.tie_decoder_embeddings or self.config.joint_vocab) and module is self.generator):
+            if not (
+                (self.config.tie_decoder_embeddings or self.config.joint_vocab)
+                and module is self.generator
+            ):
                 nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
@@ -539,7 +577,7 @@ class Seq2SeqTransformer(nn.Module):
         """
         src_emb = self.src_tok_emb(src)
         src_padding_mask = (src == self.config.pad_id).to(torch.bool)
-            
+
         src_emb = self.positional_encoding(src_emb)
         # If src_mask is provided (e.g. for specific attention patterns), ensure it's bool
         if src_mask is not None and src_mask.dtype != torch.bool:
@@ -583,7 +621,7 @@ class Seq2SeqTransformer(nn.Module):
             torch.Tensor: Decoded features.
         """
         tgt_emb = self.tgt_tok_emb(tgt)
-            
+
         tgt_emb = self.positional_encoding(tgt_emb)
 
         # Ensure all masks are boolean
@@ -633,50 +671,35 @@ class Seq2SeqTransformer(nn.Module):
             torch.Tensor: Logits of shape (..., vocab_size_tgt).
         """
         return self.generator(x)
-    def forward(self, src=None, tgt=None, return_outputs=False, label_smoothing=0.0, z_loss_coeff=0.0):
+
+    def forward(
+        self,
+        src=None,
+        tgt=None,
+        return_outputs=False,
+        label_smoothing=0.0,
+        z_loss_coeff=0.0,
+    ):
         """
         Single training step: encode, decode, and calculate loss.
-
-        Args:
-            src (torch.Tensor): Source sequences.
-            tgt (torch.Tensor): Target sequences (including BOS and EOS).
-            return_outputs (bool): Whether to return logits and num_tokens. Defaults to False.
-            label_smoothing (float): Label smoothing coefficient. Defaults to 0.0.
-            z_loss_coeff (float): Z-loss regularization coefficient. Defaults to 0.0.
-
-        Returns:
-            If return_outputs is False:
-                tuple: (loss, num_tokens)
-            If return_outputs is True:
-                tuple: (loss, (logits, num_tokens))
         """
         # src: (batch, src_len)
         # tgt: (batch, tgt_len) - contains BOS and EOS
 
         # Create masks
         src_padding_mask = (src == self.config.pad_id).to(torch.bool)
-        device = src.device
 
         # For training, we align input and target
         # Input to decoder: tgt[:, :-1] (BOS ... last_token)
         # Target for loss: tgt[:, 1:] (first_token ... EOS)
-
         tgt_input = tgt[:, :-1]
         tgt_out = tgt[:, 1:]
-
-        tgt_padding_mask = (tgt_input == self.config.pad_id).to(torch.bool)
 
         # 1. Encode
         memory = self.encode(src=src)
 
-        # Causal mask for decoder autogression
-        tgt_len = tgt_input.size(1)
-        tgt_mask = torch.triu(
-            torch.ones(tgt_len, tgt_len, device=device, dtype=torch.bool),
-            diagonal=1,
-        )
-
         # 2. Decode using native causal flag and explicit mask for torch.compile compatibility
+        # outs: (batch, tgt_len, d_model)
         outs = self.decode(
             tgt_input,
             memory,
@@ -690,46 +713,37 @@ class Seq2SeqTransformer(nn.Module):
         mask = tgt_out != self.config.pad_id
         num_tokens = mask.sum()
 
-        # Project all positions and use ignore_index for padding.
-        # Avoids boolean fancy-indexing (outs[mask]) which produces a dynamic output shape
-        # that causes torch.compile to recompile on every batch with a different pad ratio.
-        logits = self.project(outs)
+        # Flatten to (B*T, D) and (B*T) for a single large MatMul and efficient loss
+        # This is memory-efficient and keeps the graph unified for torch.compile
+        outs_flat = outs.view(-1, outs.size(-1))
+        tgt_out_flat = tgt_out.reshape(-1)
+
+        logits_flat = self.project(outs_flat)
+
+        loss = nn.functional.cross_entropy(
+            logits_flat,
+            tgt_out_flat,
+            ignore_index=self.config.pad_id,
+            label_smoothing=label_smoothing,
+            reduction="sum",
+        )
+
+        if z_loss_coeff > 0:
+            # Calculate Z-loss on flattened logits to maintain numerical stability and graph unity
+            z_loss = torch.logsumexp(logits_flat.float(), dim=-1)
+            # Apply mask to flattened z_loss
+            z_loss = (z_loss**2) * mask.view(-1)
+            loss += z_loss_coeff * z_loss.sum()
 
         if return_outputs:
-            loss = nn.functional.cross_entropy(
-                logits.transpose(1, 2),
-                tgt_out,
-                ignore_index=self.config.pad_id,
-                label_smoothing=label_smoothing,
-                reduction="sum",
-            )
-
-            if z_loss_coeff > 0:
-                z_loss = torch.logsumexp(logits, dim=-1)
-                z_loss = (z_loss**2) * mask
-                loss += z_loss_coeff * z_loss.sum()
-
+            # Reshape logits back for output if needed
+            logits = logits_flat.view(outs.size(0), outs.size(1), -1)
             return loss, (logits, num_tokens)
         else:
-            # Optimal path for training: only project valid tokens to save GPU RAM
-            outs_flat = outs[mask]
-            logits_flat = self.project(outs_flat)
-            tgt_out_flat = tgt_out[mask]
-
-            loss = nn.functional.cross_entropy(
-                logits.reshape(-1, self.generator.out_features),
-                tgt_out.reshape(-1),
-                ignore_index=self.config.pad_id,
-                label_smoothing=label_smoothing,
-                reduction="sum",
-            )
-
-            if z_loss_coeff > 0:
-                z_loss = torch.logsumexp(logits_flat, dim=-1)
-                z_loss = (z_loss**2).sum()
-                loss += z_loss_coeff * z_loss
-
             return loss, num_tokens
+
+    # Removed _compute_loss and _compute_z_loss to keep the graph unified for performance.
+    # No more @torch._dynamo.disable decorators are used.
 
     @torch.no_grad()
     def generate(self, src, max_len=None, bos_id=None, eos_id=None, enc_output=None):
@@ -893,5 +907,3 @@ class Seq2SeqTransformer(nn.Module):
 
         # Return best beam
         return inputs[:, 0, 1:]  # Skip BOS
-
-
