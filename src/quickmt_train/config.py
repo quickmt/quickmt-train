@@ -69,6 +69,11 @@ class QuantizationType(StrEnum):
     NONE = "none"
 
 
+class TokenizerType(StrEnum):
+    UNIGRAM = "unigram"
+    BPE = "bpe"
+
+
 @dataclass
 class ModelConfig:
     """Configuration for the Transformer model architecture."""
@@ -87,8 +92,8 @@ class ModelConfig:
     ff_bias: bool = True
     layernorm_eps: float = 1e-6
     activation: ActivationType = ActivationType.GELU
-    mlp_type: MLPType = MLPType.STANDARD
-    norm_type: NormType = NormType.LAYERNORM
+    mlp_type: MLPType = MLPType.GATED
+    norm_type: NormType = NormType.RMSNORM
     tie_decoder_embeddings: bool = False
     joint_vocab: bool = False
 
@@ -132,6 +137,7 @@ class DataConfig:
     char_coverage: float = 0.9999
     input_sentence_size: int = 10_000_000
     train_joint_tokenizer: bool = False
+    tokenizer_type: TokenizerType = TokenizerType.UNIGRAM
 
     @property
     def tokenizer_prefix_src(self) -> str:
@@ -143,10 +149,10 @@ class DataConfig:
 
     # Streaming & Batching
     max_tokens_per_batch: int = 6000
-    buffer_size: int = 10000
+    buffer_size: int = 40000
     num_workers: int = 4
-    prefetch_factor: int = 64
-    pad_multiple: int = 8
+    prefetch_factor: int = 128
+    pad_multiple: int = 1
 
     # N-best sampling
     src_spm_nbest_size: int = 1
@@ -175,7 +181,7 @@ class TrainConfig:
     # EMA
     use_ema: bool = True
     ema_decay: float = 0.9999
-    ema_start_step: int = 0
+    ema_start_step: int = 10000
 
     # Scheduler
     scheduler_type: SchedulerType = SchedulerType.INV_SQRT
@@ -187,7 +193,7 @@ class TrainConfig:
     accum_steps: int = 30
     grad_clip: float = 1.0
     eval_steps: int = 1000
-    max_checkpoints: int = 5
+    max_checkpoints: int = 10
     save_checkpoints: bool = True
     checkpoint_strategy: CheckpointStrategy = CheckpointStrategy.BEST
 
@@ -230,7 +236,7 @@ class ExportConfig:
 
     # Inference Defaults
     beam_size: int = 5
-    max_len: int = 256
+    max_len: int = 512
     batch_size: int = 32
 
     # CT2 specific

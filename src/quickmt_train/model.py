@@ -91,9 +91,17 @@ class FeedForward(nn.Module):
     ):
         super().__init__()
         self.mlp_type = mlp_type
+        
         if mlp_type == "gated":
-            self.gate_up_proj = nn.Linear(d_model, 2 * ffn_dim, bias=bias)
-            self.down_proj = nn.Linear(ffn_dim, d_model, bias=bias)
+            # SwiGLU hidden dimension scaling: (2/3) * 4 * d_model
+            # We adjust ffn_dim to maintain similar parameter count if it hasn't been adjusted yet
+            # Standard Transformer FFN is 4 * d_model.
+            # Gated linear units have 3 weight matrices (gate_proj, up_proj, down_proj) 
+            # while standard has 2 (linear1, linear2).
+            # To keep params same: 3 * hidden = 2 * (4 * d_model) => hidden = (2/3) * 4 * d_model
+            actual_ffn_dim = int(2/3 * ffn_dim)
+            self.gate_up_proj = nn.Linear(d_model, 2 * actual_ffn_dim, bias=bias)
+            self.down_proj = nn.Linear(actual_ffn_dim, d_model, bias=bias)
         else:
             self.linear1 = nn.Linear(d_model, ffn_dim, bias=bias)
             self.linear2 = nn.Linear(ffn_dim, d_model, bias=bias)

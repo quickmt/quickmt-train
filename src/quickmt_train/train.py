@@ -463,20 +463,31 @@ def _train_impl(
     decay_params = []
     no_decay_params = []
 
-    models_list = [model]
+    # Get the raw model to check module types during parameter traversal
+    raw_model = unwrap_model(model)
+    
+    # Create a mapping from parameter object to its containing module
+    param_to_module = {}
+    for m in raw_model.modules():
+        for p in m.parameters(recurse=False):
+            param_to_module[p] = m
 
-    for current_model in models_list:
-        for pn, p in current_model.named_parameters():
-            if not p.requires_grad:
-                continue
-            if pn.endswith("bias") or p.ndim == 1:
-                no_decay_params.append(p)
-            elif (
-                not getattr(train_cfg, "weight_decay_embeddings", True) and "emb" in pn
-            ):
-                no_decay_params.append(p)
-            else:
-                decay_params.append(p)
+    for pn, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        
+        # Determine if this parameter should be excluded from weight decay
+        module = param_to_module.get(p)
+        is_norm = isinstance(module, (nn.LayerNorm, nn.RMSNorm))
+        
+        if pn.endswith("bias") or p.ndim == 1 or is_norm:
+            no_decay_params.append(p)
+        elif (
+            not getattr(train_cfg, "weight_decay_embeddings", True) and "emb" in pn
+        ):
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
 
     optim_groups = [
         {"params": decay_params, "weight_decay": train_cfg.weight_decay},
