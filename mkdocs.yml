@@ -51,6 +51,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Corpus Creation: corpus_creation.md
+  - Parallel Training: parallel_training.md
   - Reference:
       - Training: reference/train.md
       - Checkpoint Averaging: reference/average.md
