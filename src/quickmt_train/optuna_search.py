@@ -30,21 +30,30 @@ def objective(trial, args):
     train_cfg.enable_torch_compile = False
 
     # Suggest hyperparameters
-    train_cfg.lr = trial.suggest_float("lr", *args.lr_range, log=True)
-    train_cfg.weight_decay = trial.suggest_float(
-        "weight_decay", *args.weight_decay_range, log=True
-    )
-    train_cfg.grad_clip = trial.suggest_float("grad_clip", *args.grad_clip_range)
-    train_cfg.label_smoothing = trial.suggest_float(
-        "label_smoothing", *args.label_smoothing_range
-    )
-    model_cfg.dropout = trial.suggest_float("dropout", *args.dropout_range)
-    model_cfg.norm_type = trial.suggest_categorical("norm_type", args.norm_types)
-    model_cfg.activation = trial.suggest_categorical("activation", args.activations)
-    model_cfg.layernorm_eps = trial.suggest_float(
-        "layernorm_eps", *args.layernorm_eps_range, log=True
-    )
-    model_cfg.ff_bias = trial.suggest_categorical("ff_bias", args.ff_biases)
+    if args.lr_range not in [None, "None"]:
+        train_cfg.lr = trial.suggest_float("lr", *args.lr_range, log=True)
+    if args.weight_decay_range not in [None, "None"]:
+        train_cfg.weight_decay = trial.suggest_float(
+            "weight_decay", *args.weight_decay_range, log=True
+        )
+    if args.grad_clip_range not in [None, "None"]:
+        train_cfg.grad_clip = trial.suggest_float("grad_clip", *args.grad_clip_range)
+    if args.label_smoothing_range not in [None, "None"]:
+        train_cfg.label_smoothing = trial.suggest_float(
+            "label_smoothing", *args.label_smoothing_range
+        )
+    if args.dropout_range not in [None, "None"]:
+        model_cfg.dropout = trial.suggest_float("dropout", *args.dropout_range)
+    if args.norm_types not in [None, "None"]:
+        model_cfg.norm_type = trial.suggest_categorical("norm_type", args.norm_types)
+    if args.activations not in [None, "None"]:
+        model_cfg.activation = trial.suggest_categorical("activation", args.activations)
+    if args.layernorm_eps_range not in [None, "None"]:
+        model_cfg.layernorm_eps = trial.suggest_float(
+            "layernorm_eps", *args.layernorm_eps_range, log=True
+        )
+    if args.ff_biases not in [None, "None"]:
+        model_cfg.ff_bias = trial.suggest_categorical("ff_bias", args.ff_biases)
 
     # Suggest corpus weights if requested
     if args.tune_corpus_weights:
@@ -103,15 +112,15 @@ def search_cli(
     n_trials: int = 200,
     study_name: str = None,
     db: str = None,
-    lr_range: tuple[float, float] = (1e-5, 5e-3),
-    weight_decay_range: tuple[float, float] = (1e-4, 0.1),
-    grad_clip_range: tuple[float, float] = (0.1, 5.0),
-    label_smoothing_range: tuple[float, float] = (0.0, 0.2),
-    dropout_range: tuple[float, float] = (0.0, 0.3),
-    norm_types: tuple[str, ...] = ("rmsnorm", "layernorm"),
-    activations: tuple[str, ...] = ("gelu", "relu", "silu"),
-    layernorm_eps_range: tuple[float, float] = (1e-6, 1e-4),
-    ff_biases: tuple[bool, ...] = (True, False),
+    lr_range: tuple[float, float] | None = (1e-5, 5e-3),
+    weight_decay_range: tuple[float, float] | None = (1e-4, 0.1),
+    grad_clip_range: tuple[float, float] | None = (0.1, 5.0),
+    label_smoothing_range: tuple[float, float] | None = (0.0, 0.2),
+    dropout_range: tuple[float, float] | None = (0.0, 0.3),
+    norm_types: tuple[str, ...] | None = ("rmsnorm", "layernorm"),
+    activations: tuple[str, ...] | None = ("gelu", "relu", "silu"),
+    layernorm_eps_range: tuple[float, float] | None = (1e-6, 1e-4),
+    ff_biases: tuple[bool, ...] | None = (True, False),
     tune_corpus_weights: bool = True,
 ):
     """
@@ -125,16 +134,16 @@ def search_cli(
         n_trials: Number of Optuna trials to run
         study_name: Name of the experiment study. Defaults to the database file name.
         db: Path to SQLite DB to save Optuna study. Default: optuna_{train.experiment_name}.db
-        lr_range: Range for learning rate (min, max)
-        weight_decay_range: Range for weight decay (min, max)
-        grad_clip_range: Range for gradient clipping (min, max)
-        label_smoothing_range: Range for label smoothing (min, max)
-        dropout_range: Range for dropout (min, max)
-        norm_types: Possible values for normalization type
-        activations: Possible values for activation function
-        layernorm_eps_range: Range for layernorm epsilon (min, max)
-        ff_biases: Possible values for feed-forward bias
-        tune_corpus_weights: Whether to tune the weight of each corpus in the config
+        lr_range: Range for learning rate (min, max). Set to None to use config default.
+        weight_decay_range: Range for weight decay (min, max). Set to None to use config default.
+        grad_clip_range: Range for gradient clipping (min, max). Set to None to use config default.
+        label_smoothing_range: Range for label smoothing (min, max). Set to None to use config default.
+        dropout_range: Range for dropout (min, max). Set to None to use config default.
+        norm_types: Possible values for normalization type. Set to None to use config default.
+        activations: Possible values for activation function. Set to None to use config default.
+        layernorm_eps_range: Range for layernorm epsilon (min, max). Set to None to use config default.
+        ff_biases: Possible values for feed-forward bias. Set to None to use config default.
+        tune_corpus_weights: Whether to tune the weight of each corpus in the config.
     """
 
     # Create a simple args object to match the expected interface in objective()
