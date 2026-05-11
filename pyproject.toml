@@ -47,6 +47,7 @@ Repository = "https://github.com/quickmt/quickmt-train"
 [project.scripts]
 quickmt-train = "quickmt_train.train:main"
 quickmt-flores-download = "quickmt_train.flores_to_files:main"
+quickmt-bouquet-download = "quickmt_train.bouquet_to_files:main"
 quickmt-avg = "quickmt_train.average_checkpoints:main"
 quickmt-export = "quickmt_train.convert_to_ct2:main"
 quickmt-eval = "quickmt_train.evaluate:main"

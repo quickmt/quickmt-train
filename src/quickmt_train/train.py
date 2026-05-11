@@ -319,7 +319,9 @@ def _train_impl(
         print(f"{get_time_info()} Using device: {device}")
 
     if is_main:
-        repo = getattr(train_cfg, "tracker_repo", None) or getattr(train_cfg, "aim_repo", None)
+        repo = getattr(train_cfg, "tracker_repo", None) or getattr(
+            train_cfg, "aim_repo", None
+        )
         if repo:
             tracker_type = getattr(train_cfg, "tracker", "aim")
             if hasattr(tracker_type, "value"):
@@ -466,7 +468,7 @@ def _train_impl(
 
     # Get the raw model to check module types during parameter traversal
     raw_model = unwrap_model(model)
-    
+
     # Create a mapping from parameter object to its containing module
     param_to_module = {}
     for m in raw_model.modules():
@@ -476,16 +478,14 @@ def _train_impl(
     for pn, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        
+
         # Determine if this parameter should be excluded from weight decay
         module = param_to_module.get(p)
         is_norm = isinstance(module, (nn.LayerNorm, nn.RMSNorm))
-        
+
         if pn.endswith("bias") or p.ndim == 1 or is_norm:
             no_decay_params.append(p)
-        elif (
-            not getattr(train_cfg, "weight_decay_embeddings", True) and "emb" in pn
-        ):
+        elif not getattr(train_cfg, "weight_decay_embeddings", True) and "emb" in pn:
             no_decay_params.append(p)
         else:
             decay_params.append(p)
@@ -499,6 +499,7 @@ def _train_impl(
     if getattr(train_cfg, "use_8bit_optimizer", False):
         try:
             import bitsandbytes as bnb
+
             optimizer = bnb.optim.AdamW8bit(
                 optim_groups,
                 lr=train_cfg.lr,
@@ -508,7 +509,9 @@ def _train_impl(
             if is_main:
                 print(f"{get_time_info()} Using bitsandbytes 8-bit AdamW optimizer")
         except ImportError:
-            raise ImportError("bitsandbytes is required for use_8bit_optimizer=True. Please install it with 'pip install bitsandbytes'")
+            raise ImportError(
+                "bitsandbytes is required for use_8bit_optimizer=True. Please install it with 'pip install bitsandbytes'"
+            )
     else:
         optimizer = optim.AdamW(
             optim_groups,

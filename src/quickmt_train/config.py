@@ -42,7 +42,6 @@ class TrackerType(StrEnum):
     WANDB = "wandb"
 
 
-
 class PrecisionType(StrEnum):
     BF16 = "bf16"
     BFLOAT16 = "bfloat16"
@@ -211,7 +210,7 @@ class TrainConfig:
 
     # Early Stopping
     early_stopping_patience: int = 0
-    early_stopping_metric: EarlyStoppingMetric = EarlyStoppingMetric.CHRF
+    early_stopping_metric: EarlyStoppingMetric = EarlyStoppingMetric.LOSS
 
     # Hardware & Performance
     device: DeviceType = DeviceType.CUDA
