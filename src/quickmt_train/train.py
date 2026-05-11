@@ -416,9 +416,9 @@ def _train_impl(
         if is_main:
             print(f"{get_time_info()} Attempting to enable torch.compile")
         try:
-            if model_cfg.use_checkpoint and inductor_config is not None:
+            if model_cfg.checkpoint_gradients and inductor_config is not None:
                 inductor_config.recompute_all = True
-                model.config.use_checkpoint = False
+                model.config.checkpoint_gradients = False
                 if is_main:
                     print(
                         f"{get_time_info()} Enabled Inductor native recomputation (memory optimization)"
@@ -495,13 +495,28 @@ def _train_impl(
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
 
-    optimizer = optim.AdamW(
-        optim_groups,
-        lr=train_cfg.lr,
-        eps=train_cfg.adam_eps,
-        betas=(train_cfg.adam_beta1, train_cfg.adam_beta2),
-        fused=True if device.type == "cuda" else False,
-    )
+    fused_opt = train_cfg.fused_optimizer if device.type == "cuda" else False
+    if getattr(train_cfg, "use_8bit_optimizer", False):
+        try:
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.AdamW8bit(
+                optim_groups,
+                lr=train_cfg.lr,
+                eps=train_cfg.adam_eps,
+                betas=(train_cfg.adam_beta1, train_cfg.adam_beta2),
+            )
+            if is_main:
+                print(f"{get_time_info()} Using bitsandbytes 8-bit AdamW optimizer")
+        except ImportError:
+            raise ImportError("bitsandbytes is required for use_8bit_optimizer=True. Please install it with 'pip install bitsandbytes'")
+    else:
+        optimizer = optim.AdamW(
+            optim_groups,
+            lr=train_cfg.lr,
+            eps=train_cfg.adam_eps,
+            betas=(train_cfg.adam_beta1, train_cfg.adam_beta2),
+            fused=fused_opt,
+        )
 
     # Scheduler
     def lr_lambda(current_step):

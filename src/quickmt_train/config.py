@@ -96,7 +96,7 @@ class ModelConfig:
     dropout: float = 0.1
     vocab_size_src: int = 32000
     vocab_size_tgt: int = 32000
-    use_checkpoint: bool = False
+    checkpoint_gradients: bool = False
     ff_bias: bool = True
     layernorm_eps: float = 1e-5
     activation: ActivationType = ActivationType.GELU
@@ -187,6 +187,8 @@ class TrainConfig:
     adam_beta1: float = 0.9
     adam_beta2: float = 0.998
     z_loss_coeff: float = 1e-4
+    fused_optimizer: bool = False
+    use_8bit_optimizer: bool = False
 
     # EMA
     use_ema: bool = True

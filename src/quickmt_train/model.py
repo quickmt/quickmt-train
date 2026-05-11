@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 import math
-
 
 class PositionalEncoding(nn.Module):
     """
@@ -596,9 +596,16 @@ class Seq2SeqTransformer(nn.Module):
             )
 
         # Standard encoder is non-causal
-        memory = self.encoder(
-            src_emb, mask=src_mask, src_key_padding_mask=src_padding_mask
-        )
+        memory = src_emb
+        for mod in self.encoder.layers:
+            if getattr(self.config, "checkpoint_gradients", False) and self.training:
+                memory = torch.utils.checkpoint.checkpoint(
+                    mod, memory, src_mask, src_padding_mask, False, use_reentrant=False
+                )
+            else:
+                memory = mod(memory, src_mask=src_mask, src_key_padding_mask=src_padding_mask, is_causal=False)
+        if self.encoder.norm is not None:
+            memory = self.encoder.norm(memory)
         return memory
 
     def decode(
@@ -656,16 +663,25 @@ class Seq2SeqTransformer(nn.Module):
         ):
             memory_key_padding_mask = memory_key_padding_mask.to(torch.bool)
 
-        out = self.decoder(
-            tgt_emb,
-            memory,
-            tgt_mask=tgt_mask,
-            memory_mask=memory_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
-            memory_key_padding_mask=memory_key_padding_mask,
-            tgt_is_causal=tgt_is_causal,
-            memory_is_causal=memory_is_causal,
-        )
+        out = tgt_emb
+        for mod in self.decoder.layers:
+            if getattr(self.config, "checkpoint_gradients", False) and self.training:
+                out = torch.utils.checkpoint.checkpoint(
+                    mod, out, memory, tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask, tgt_is_causal, memory_is_causal, use_reentrant=False
+                )
+            else:
+                out = mod(
+                    out,
+                    memory,
+                    tgt_mask=tgt_mask,
+                    memory_mask=memory_mask,
+                    tgt_key_padding_mask=tgt_key_padding_mask,
+                    memory_key_padding_mask=memory_key_padding_mask,
+                    tgt_is_causal=tgt_is_causal,
+                    memory_is_causal=memory_is_causal,
+                )
+        if self.decoder.norm is not None:
+            out = self.decoder.norm(out)
         return out
 
     def project(self, x):
