@@ -525,6 +525,12 @@ def PrepareData(
     if not data_cfg.corpora:
         raise ValueError("No corpora provided in data_cfg")
 
+    if not any(c.start_step == 0 for c in data_cfg.corpora):
+        raise ValueError(
+            "At least one training corpus must have start_step set to 0. "
+            "If all corpora have start_step > 0, the training will be stuck at the beginning."
+        )
+
     if not model_cfg.joint_vocab:
         tokenizer_train_src = data_cfg.corpora[0].src_file
         tokenizer_train_tgt = data_cfg.corpora[0].tgt_file
