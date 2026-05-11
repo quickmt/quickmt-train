@@ -35,6 +35,14 @@ class DeviceType(StrEnum):
     AUTO = "auto"
 
 
+class TrackerType(StrEnum):
+    AIM = "aim"
+    TRACKIO = "trackio"
+    MLFLOW = "mlflow"
+    WANDB = "wandb"
+
+
+
 class PrecisionType(StrEnum):
     BF16 = "bf16"
     BFLOAT16 = "bfloat16"
@@ -90,7 +98,7 @@ class ModelConfig:
     vocab_size_tgt: int = 32000
     use_checkpoint: bool = False
     ff_bias: bool = True
-    layernorm_eps: float = 1e-6
+    layernorm_eps: float = 1e-5
     activation: ActivationType = ActivationType.GELU
     mlp_type: MLPType = MLPType.GATED
     norm_type: NormType = NormType.RMSNORM
@@ -166,7 +174,9 @@ class TrainConfig:
     """Configuration for the training loop and optimization."""
 
     experiment_name: str = "default"
-    aim_repo: str = "./aim-runs"
+    tracker: TrackerType = TrackerType.AIM
+    aim_repo: str = "./aim-runs"  # Kept for backward compatibility
+    tracker_repo: str = "./aim-runs"
 
     # Optimizer
     lr: float = 1.0e-3

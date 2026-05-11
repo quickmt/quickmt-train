@@ -27,14 +27,7 @@ try:
 except ImportError:
     inductor_config = None
 
-try:
-    from aim import Run
-
-    AIM_AVAILABLE = True
-except ImportError:
-    AIM_AVAILABLE = False
-    Run = None
-
+from .tracker import get_tracker
 from safetensors.torch import load_file, save_model
 from shutil import copyfile
 import torch.distributed as dist
@@ -325,8 +318,15 @@ def _train_impl(
         print(f"{get_time_info()} Rank: {rank}/{world_size} | Local Rank: {local_rank}")
         print(f"{get_time_info()} Using device: {device}")
 
-    if is_main and AIM_AVAILABLE and train_cfg.aim_repo:
-        run = Run(repo=train_cfg.aim_repo, experiment=train_cfg.experiment_name)
+    if is_main:
+        repo = getattr(train_cfg, "tracker_repo", None) or getattr(train_cfg, "aim_repo", None)
+        if repo:
+            tracker_type = getattr(train_cfg, "tracker", "aim")
+            if hasattr(tracker_type, "value"):
+                tracker_type = tracker_type.value
+            run = get_tracker(tracker_type, repo, train_cfg.experiment_name)
+        else:
+            run = None
     else:
         run = None
 
@@ -344,7 +344,7 @@ def _train_impl(
                 return {k: serialize_val(i) for k, i in v.items()}
             return v
 
-        run["hparams"] = {
+        hparams = {
             **{
                 f"model_{k}": serialize_val(v)
                 for k, v in dataclasses.asdict(model_cfg).items()
@@ -358,6 +358,7 @@ def _train_impl(
                 for k, v in dataclasses.asdict(train_cfg).items()
             },
         }
+        run.log_hparams(hparams)
 
     # Tokenizer preparation
     from .data import PrepareData
@@ -861,6 +862,9 @@ def _train_impl(
 
         if ema is not None:
             ema.restore()
+
+    if is_main and run:
+        run.close()
 
     return latest_val_metrics
 

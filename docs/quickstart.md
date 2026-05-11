@@ -24,6 +24,9 @@ git clone https://github.com/quickmt/quickmt-train.git
 # Basic install
 pip install -e ./quickmt-train/
 
+# Or using uv (https://github.com/astral-sh/uv)
+uv pip install -e ./quickmt-train/
+
 # To install aim (for experiment tracking)
 pip install -e ./quickmt-train[track]
 

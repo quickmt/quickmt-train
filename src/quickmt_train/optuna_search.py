@@ -22,9 +22,10 @@ def objective(trial, args):
     # Override config with args
     train_cfg.max_steps = args.max_steps
     train_cfg.eval_steps = args.eval_steps
-    train_cfg.quick_test_samples = 0
+    # Disable checkpoint saving and trackers for Optuna runs
     train_cfg.save_checkpoints = False
     train_cfg.aim_repo = None
+    train_cfg.tracker_repo = None
 
     # Do not enable compilation during hyperparameter search (can be slow/flaky across trials)
     train_cfg.enable_torch_compile = False
