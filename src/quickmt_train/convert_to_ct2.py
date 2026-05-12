@@ -500,6 +500,7 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
         )
 
     spec.validate()
+    print("Using quantization: ", export_cfg.quantization)
     spec.optimize(quantization=export_cfg.quantization)
     spec.save(export_cfg.output_dir)
     print(f"Model saved to {export_cfg.output_dir}")
