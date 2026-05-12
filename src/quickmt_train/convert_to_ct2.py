@@ -537,6 +537,14 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
             os.path.join(export_cfg.output_dir, "model.safetensors"),
         )
 
+    # Copy metrics.jsonl to output directory
+    metrics_file = os.path.join(experiment_dir, "metrics.jsonl")
+    if os.path.exists(metrics_file):
+        shutil.copy2(
+            metrics_file,
+            os.path.join(export_cfg.output_dir, "metrics.jsonl"),
+        )
+
 
 def main():
     fire.Fire(convert_to_ct2_cli)

@@ -232,8 +232,10 @@ def load_model_weights(model, train_cfg, device, get_time_info):
 def train(model_cfg=None, data_cfg=None, train_cfg=None, on_eval_step=None):
     training_start = time.time()
 
-    def get_time_info():
+    def get_time_info(return_raw=False):
         elapsed = time.time() - training_start
+        if return_raw:
+            return elapsed
         elapsed_str = str(timedelta(seconds=int(elapsed)))
         curr_time = datetime.now().strftime("%H:%M:%S")
         return f"[{curr_time}] [{elapsed_str}]"
@@ -897,7 +899,8 @@ def save_checkpoint(
     if val_metrics is not None:
         metrics_path = os.path.join(config.experiment_name, "metrics.jsonl")
         with open(metrics_path, "a") as f:
-            metric_entry = {"step": step, **val_metrics}
+            elapsed = get_time_info(return_raw=True)
+            metric_entry = {"step": step, "elapsed": round(elapsed, 2), **val_metrics}
             f.write(json.dumps(metric_entry) + "\n")
 
     if not os.path.exists(config.checkpoint_dir):
