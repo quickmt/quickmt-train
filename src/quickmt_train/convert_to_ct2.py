@@ -524,6 +524,18 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
             Path(export_cfg.output_dir) / "tgt.spm.model",
         )
 
+    # Copy original config and safetensors model to output directory
+    shutil.copy2(
+        os.path.join(experiment_dir, "config.yaml"),
+        os.path.join(export_cfg.output_dir, "config.yaml"),
+    )
+
+    if os.path.exists(model_file):
+        shutil.copy2(
+            model_file,
+            os.path.join(export_cfg.output_dir, "model.safetensors"),
+        )
+
 
 def main():
     fire.Fire(convert_to_ct2_cli)
