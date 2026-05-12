@@ -116,6 +116,9 @@ Next we train our model!
 ```bash
 quickmt-train configs/isen-tiny-1.yaml
 
+# Much larget model, higher quality, takes much longer to train
+# quickmt-train configs/isen-base.yaml
+
 # Or, if you are lucky enough to have more than one GPU
 torchrun --nproc_per_node=2 -m quickmt_train.train configs/isen-tiny-1.yaml
 ```
