@@ -237,7 +237,9 @@ flores_plus*
 *-base/
 quickmt-train*
 quickmt-valid*
-isen*
+/isen-*
+configs/isen-tiny-*
+configs/isen-test-*
 src/quickmt_train/evaluate_ollama.py
 finetranslations*
 newscrawl2024*
