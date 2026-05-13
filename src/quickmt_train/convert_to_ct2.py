@@ -505,39 +505,48 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
     spec.save(export_cfg.output_dir)
     print(f"Model saved to {export_cfg.output_dir}")
 
-    # Copy Tokenizers to output directory
+    # 7. Copy additional artifacts
+    # Create pytorch_model subfolder
+    pytorch_model_dir = os.path.join(export_cfg.output_dir, "pytorch_model")
+    os.makedirs(pytorch_model_dir, exist_ok=True)
+
+    # Copy Tokenizers to output directory (root and pytorch_model subfolder)
     if model_cfg.joint_vocab:
         # Use the explicit path created in data.py: experiment_dir / "tokenizer_joint.model"
-        tokenizer_model = os.path.join(
-            data_cfg.experiment_name, "tokenizer_joint.model"
-        )
-        shutil.copy(
-            tokenizer_model,
-            Path(export_cfg.output_dir) / "joint.spm.model",
-        )
+        joint_prefix = os.path.join(data_cfg.experiment_name, "tokenizer_joint")
+        
+        # Root copy (legacy/compatibility)
+        shutil.copy2(f"{joint_prefix}.model", os.path.join(export_cfg.output_dir, "joint.spm.model"))
+        
+        # Subfolder copies (duplicating joint for src/tgt as requested)
+        for suffix in [".model", ".vocab"]:
+            shutil.copy2(f"{joint_prefix}{suffix}", os.path.join(pytorch_model_dir, f"tokenizer_src{suffix}"))
+            shutil.copy2(f"{joint_prefix}{suffix}", os.path.join(pytorch_model_dir, f"tokenizer_tgt{suffix}"))
     else:
-        shutil.copy(
-            f"{data_cfg.tokenizer_prefix_src}.model",
-            Path(export_cfg.output_dir) / "src.spm.model",
-        )
-        shutil.copy(
-            f"{data_cfg.tokenizer_prefix_tgt}.model",
-            Path(export_cfg.output_dir) / "tgt.spm.model",
-        )
+        # Root copies (standard names for CT2 export structure)
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_src}.model", os.path.join(export_cfg.output_dir, "src.spm.model"))
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_tgt}.model", os.path.join(export_cfg.output_dir, "tgt.spm.model"))
+        
+        # Subfolder copies (original names)
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_src}.model", os.path.join(pytorch_model_dir, "tokenizer_src.model"))
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_src}.vocab", os.path.join(pytorch_model_dir, "tokenizer_src.vocab"))
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_tgt}.model", os.path.join(pytorch_model_dir, "tokenizer_tgt.model"))
+        shutil.copy2(f"{data_cfg.tokenizer_prefix_tgt}.vocab", os.path.join(pytorch_model_dir, "tokenizer_tgt.vocab"))
 
-    # Copy original config and safetensors model to output directory
+    # Copy original config to output directory root
     shutil.copy2(
         os.path.join(experiment_dir, "config.yaml"),
         os.path.join(export_cfg.output_dir, "config.yaml"),
     )
 
+    # Copy safetensors model to pytorch_model subfolder
     if os.path.exists(model_file):
         shutil.copy2(
             model_file,
-            os.path.join(export_cfg.output_dir, "model.safetensors"),
+            os.path.join(pytorch_model_dir, "model.safetensors"),
         )
 
-    # Copy metrics.jsonl to output directory
+    # Copy metrics.jsonl to output directory root
     metrics_file = os.path.join(experiment_dir, "metrics.jsonl")
     if os.path.exists(metrics_file):
         shutil.copy2(
