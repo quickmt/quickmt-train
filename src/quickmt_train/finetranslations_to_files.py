@@ -3,6 +3,7 @@ import fire
 from datasets import load_dataset
 from tqdm import tqdm
 from pathlib import Path
+from .data import smart_open
 
 
 def convert(
@@ -34,10 +35,10 @@ def convert(
 
     # Raise exception if output files exist
     src_output_file = (
-        Path(output_folder) / f"finetranslations.{src_lang}-{tgt_lang}.{src_lang}"
+        Path(output_folder) / f"finetranslations.{src_lang}-{tgt_lang}.{src_lang}.zst"
     )
     tgt_output_file = (
-        Path(output_folder) / f"finetranslations.{src_lang}-{tgt_lang}.{tgt_lang}"
+        Path(output_folder) / f"finetranslations.{src_lang}-{tgt_lang}.{tgt_lang}.zst"
     )
 
     if src_output_file.exists():
@@ -48,9 +49,9 @@ def convert(
 
     line_counter = 0
 
-    with open(src_output_file, "wt") as srcfile:
-        with open(
-            tgt_output_file,
+    with smart_open(str(src_output_file), "wt") as srcfile:
+        with smart_open(
+            str(tgt_output_file),
             "wt",
         ) as tgtfile:
             for x in tqdm(ds):
