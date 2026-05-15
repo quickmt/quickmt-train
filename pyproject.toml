@@ -23,7 +23,8 @@ dependencies = [
     "quickmt @ git+https://github.com/quickmt/quickmt.git",
     "cuda-bindings<13",
     "nvidia-nvshmem-cu12<4",
-    "cuda-pathfinder==1.5.0"
+    "cuda-pathfinder==1.5.0",
+    "zstandard"
 ]
 
 [project.optional-dependencies]

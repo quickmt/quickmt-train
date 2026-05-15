@@ -2,8 +2,78 @@ import os
 import torch
 import itertools
 import random
+import gzip
+import lzma
+import zipfile
+import io
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 from torch.utils.data import DataLoader, IterableDataset
 import sentencepiece as spm
+
+
+def smart_open(filename, mode="r", encoding="utf-8"):
+    """
+    Open a file with support for gzip, xz, zstd, and zip compression.
+    """
+    if "b" not in mode:
+        if mode == "r":
+            mode = "rt"
+        elif mode == "w":
+            mode = "wt"
+        elif mode == "a":
+            mode = "at"
+
+    if filename.endswith(".gz"):
+        return gzip.open(filename, mode, encoding=encoding if "b" not in mode else None)
+    elif filename.endswith(".xz"):
+        return lzma.open(filename, mode, encoding=encoding if "b" not in mode else None)
+    elif filename.endswith(".zst"):
+        if zstd is None:
+            raise ImportError(
+                "zstandard is not installed. Please install it to open .zst files."
+            )
+        return zstd.open(filename, mode, encoding=encoding if "b" not in mode else None)
+    elif filename.endswith(".zip"):
+        if "w" in mode or "a" in mode:
+            # Writing to zip is more complex; falling back to standard open for now.
+            return open(filename, mode, encoding=encoding)
+        zf = zipfile.ZipFile(filename, "r")
+        name = zf.namelist()[0]
+        return io.TextIOWrapper(zf.open(name), encoding=encoding)
+    else:
+        return open(filename, mode, encoding=encoding)
+
+
+def create_sample_file(input_files, output_file, target_total_lines):
+    """
+    Creates a sampled plain text file from one or more input files (potentially compressed).
+    SentencePiece training requires plain text files.
+    """
+    if isinstance(input_files, str):
+        input_files = [input_files]
+
+    lines_per_file = max(1, target_total_lines // len(input_files))
+
+    with open(output_file, "w", encoding="utf-8") as f_out:
+        for f_path in input_files:
+            if not os.path.exists(f_path):
+                continue
+            with smart_open(f_path, "r", encoding="utf-8") as f_in:
+                # Reservoir sampling for random sample without loading full file
+                reservoir = []
+                for i, line in enumerate(f_in):
+                    if i < lines_per_file:
+                        reservoir.append(line)
+                    else:
+                        j = random.randint(0, i)
+                        if j < lines_per_file:
+                            reservoir[j] = line
+
+                for line in reservoir:
+                    f_out.write(line)
 
 
 class StreamingTextDataset(IterableDataset):
@@ -61,8 +131,8 @@ class StreamingTextDataset(IterableDataset):
             files_list = []
 
             def init_iter(c, epoch=0):
-                f_src = open(c.src_file, "r", encoding="utf-8")
-                f_tgt = open(c.tgt_file, "r", encoding="utf-8")
+                f_src = smart_open(c.src_file, "r", encoding="utf-8")
+                f_tgt = smart_open(c.tgt_file, "r", encoding="utf-8")
                 pair_iter = zip(f_src, f_tgt)
 
                 # Partition across DDP ranks and DataLoader workers
@@ -402,7 +472,7 @@ def get_dummy_data():
 
 def load_file_lines(path, limit=None):
     lines = []
-    with open(path, "r", encoding="utf-8") as f:
+    with smart_open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if limit and i >= limit:
                 break
@@ -422,8 +492,8 @@ def prepare_dev_sample(src_dev_path, tgt_dev_path, experiment_name, val_max_samp
         return sample_src_path, sample_tgt_path
 
     with (
-        open(src_dev_path, "r", encoding="utf-8") as f_src,
-        open(tgt_dev_path, "r", encoding="utf-8") as f_tgt,
+        smart_open(src_dev_path, "r", encoding="utf-8") as f_src,
+        smart_open(tgt_dev_path, "r", encoding="utf-8") as f_tgt,
     ):
         src_lines = f_src.readlines()
         tgt_lines = f_tgt.readlines()
@@ -442,8 +512,8 @@ def prepare_dev_sample(src_dev_path, tgt_dev_path, experiment_name, val_max_samp
     indices.sort()
 
     with (
-        open(sample_src_path, "w", encoding="utf-8") as f_src,
-        open(sample_tgt_path, "w", encoding="utf-8") as f_tgt,
+        smart_open(sample_src_path, "w", encoding="utf-8") as f_src,
+        smart_open(sample_tgt_path, "w", encoding="utf-8") as f_tgt,
     ):
         for i in indices:
             f_src.write(src_lines[i])
@@ -488,25 +558,9 @@ def PrepareData(
             if not files_to_sample:
                 raise FileNotFoundError("No corpus files found for tokenizer training")
 
-            # Calculate lines per file to ensure total sample size matches
-            target_total_lines = data_cfg.input_sentence_size
-            lines_per_file = target_total_lines // len(files_to_sample)
-
-            with open(joint_file, "w", encoding="utf-8") as f_out:
-                for f_path in files_to_sample:
-                    with open(f_path, "r", encoding="utf-8") as f_in:
-                        # Reservoir sampling for random sample without loading full file
-                        reservoir = []
-                        for i, line in enumerate(f_in):
-                            if i < lines_per_file:
-                                reservoir.append(line)
-                            else:
-                                j = random.randint(0, i)
-                                if j < lines_per_file:
-                                    reservoir[j] = line
-
-                        for line in reservoir:
-                            f_out.write(line)
+            create_sample_file(
+                files_to_sample, joint_file, data_cfg.input_sentence_size
+            )
 
             train_tokenizer(
                 joint_file,
@@ -550,8 +604,12 @@ def PrepareData(
 
         if not os.path.exists(f"{model_prefix_src}.model"):
             print("Training Source Tokenizer...")
+            tmp_src = os.path.join(data_cfg.experiment_name, "tokenizer_train.src.txt")
+            create_sample_file(
+                tokenizer_train_src, tmp_src, data_cfg.input_sentence_size
+            )
             train_tokenizer(
-                tokenizer_train_src,
+                tmp_src,
                 model_prefix_src,
                 vocab_size_src,
                 char_coverage=data_cfg.char_coverage,
@@ -565,8 +623,12 @@ def PrepareData(
 
         if not os.path.exists(f"{model_prefix_tgt}.model"):
             print("Training Target Tokenizer...")
+            tmp_tgt = os.path.join(data_cfg.experiment_name, "tokenizer_train.tgt.txt")
+            create_sample_file(
+                tokenizer_train_tgt, tmp_tgt, data_cfg.input_sentence_size
+            )
             train_tokenizer(
-                tokenizer_train_tgt,
+                tmp_tgt,
                 model_prefix_tgt,
                 vocab_size_tgt,
                 char_coverage=data_cfg.char_coverage,
@@ -636,7 +698,7 @@ def PrepareData(
     )
     for c in data_cfg.corpora:
         try:
-            with open(c.src_file, "r", encoding="utf-8") as f:
+            with smart_open(c.src_file, "r", encoding="utf-8") as f:
                 line_count = sum(1 for _ in f)
             if line_count < total_shards:
                 print(
