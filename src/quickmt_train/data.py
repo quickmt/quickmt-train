@@ -35,6 +35,12 @@ def smart_open(filename, mode="r", encoding="utf-8"):
             raise ImportError(
                 "zstandard is not installed. Please install it to open .zst files."
             )
+        if "w" in mode or "a" in mode:
+            # Use all available cores for compression
+            cctx = zstd.ZstdCompressor(threads=-1)
+            return zstd.open(
+                filename, mode, cctx=cctx, encoding=encoding if "b" not in mode else None
+            )
         return zstd.open(filename, mode, encoding=encoding if "b" not in mode else None)
     elif filename.endswith(".zip"):
         if "w" in mode or "a" in mode:
