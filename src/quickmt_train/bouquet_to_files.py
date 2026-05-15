@@ -9,17 +9,18 @@ def bouquet_to_files(split: str):
     Args:
         split: Split to use
     """
-    bouquet_split = load_dataset("facebook/bouquet", split, split="test")
+    for dataset in ['dev', 'test']:
+        bouquet_split = load_dataset("facebook/bouquet", split, split=dataset)
 
-    src_filename = f"bouquet-{split}.txt"
-    tgt_filename = f"bouquet-eng_Latn.txt"
+        src_filename = f"bouquet-{dataset}-{split}.txt"
+        tgt_filename = f"bouquet-{dataset}-eng_Latn.txt"
 
-    print(f"Saving to {tgt_filename} and {src_filename}")
-    with open(tgt_filename, "w") as f_tgt:
-        with open(src_filename, "w") as f_src:
-            for i in bouquet_split:
-                f_tgt.write(i["tgt_text"] + "\n")
-                f_src.write(i["src_text"] + "\n")
+        print(f"Saving to {tgt_filename} and {src_filename}")
+        with open(tgt_filename, "w") as f_tgt:
+            with open(src_filename, "w") as f_src:
+                for i in bouquet_split:
+                    f_tgt.write(i["tgt_text"] + "\n")
+                    f_src.write(i["src_text"] + "\n")
 
 
 def main():

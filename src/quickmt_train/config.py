@@ -220,6 +220,7 @@ class TrainConfig:
     # Logging & Validation
     log_steps: int = 100
     val_max_samples: int = 2000
+    val_batch_size: int = 8
     quick_test_samples: int = 5
 
     # Checkpoint Resume

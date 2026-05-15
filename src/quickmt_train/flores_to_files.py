@@ -10,27 +10,28 @@ def flores_plus_to_files(src_lang: str, tgt_lang: str = "eng_Latn"):
         src_lang: Source language code
         tgt_lang: Target language code
     """
-    try:
-        tgt_flores = load_dataset(
-            "openlanguagedata/flores_plus", tgt_lang, split="devtest"
-        )
-        src_flores = load_dataset(
-            "openlanguagedata/flores_plus", src_lang, split="devtest"
-        )
-    except Exception:
-        print(f"ERROR: Language {tgt_lang} or {src_lang} not found")
-        raise
+    for split in ["devtest", "dev"]:
+        try:
+            tgt_flores = load_dataset(
+                "openlanguagedata/flores_plus", tgt_lang, split=split
+            )
+            src_flores = load_dataset(
+                "openlanguagedata/flores_plus", src_lang, split=split
+            )
+        except Exception:
+            print(f"ERROR: Language {tgt_lang} or {src_lang} not found")
+            raise
 
-    tgt_filename = f"flores_plus_{tgt_lang}.txt"
-    src_filename = f"flores_plus_{src_lang}.txt"
-    print(f"Saving to {tgt_filename} and {src_filename}")
+        tgt_filename = f"flores_plus_{split}_{tgt_lang}.txt"
+        src_filename = f"flores_plus_{split}_{src_lang}.txt"
+        print(f"Saving to {tgt_filename} and {src_filename}")
 
-    with open(tgt_filename, "w") as f:
-        for i in tgt_flores:
-            f.write(i["text"] + "\n")
-    with open(src_filename, "w") as f:
-        for i in src_flores:
-            f.write(i["text"] + "\n")
+        with open(tgt_filename, "w") as f:
+            for i in tgt_flores:
+                f.write(i["text"] + "\n")
+        with open(src_filename, "w") as f:
+            for i in src_flores:
+                f.write(i["text"] + "\n")
 
 
 def main():

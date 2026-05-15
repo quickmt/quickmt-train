@@ -246,3 +246,4 @@ newscrawl2024*
 mlflow-runs/
 mlruns/
 bouquet-*
+data/*

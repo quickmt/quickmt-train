@@ -30,6 +30,7 @@ class StreamingTextDataset(IterableDataset):
         tgt_spm_nbest_size: int = 0,
         rank: int = 0,
         world_size: int = 1,
+        max_batch_size: int = None,
     ):
         self.corpora = corpora
         self.src_sp = src_sp
@@ -49,6 +50,7 @@ class StreamingTextDataset(IterableDataset):
         self.tgt_spm_nbest_size = tgt_spm_nbest_size
         self.rank = rank
         self.world_size = world_size
+        self.max_batch_size = max_batch_size
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -58,7 +60,7 @@ class StreamingTextDataset(IterableDataset):
             iters = []
             files_list = []
 
-            def init_iter(c):
+            def init_iter(c, epoch=0):
                 f_src = open(c.src_file, "r", encoding="utf-8")
                 f_tgt = open(c.tgt_file, "r", encoding="utf-8")
                 pair_iter = zip(f_src, f_tgt)
@@ -70,13 +72,16 @@ class StreamingTextDataset(IterableDataset):
                 total_shards = self.world_size * num_workers
                 global_worker_id = self.rank * num_workers + worker_id
 
+                # Shift start index by epoch to rotate shards across workers
+                start_idx = (global_worker_id + epoch) % total_shards
+
                 pair_iter = itertools.islice(
-                    pair_iter, global_worker_id, None, total_shards
+                    pair_iter, start_idx, None, total_shards
                 )
                 return f_src, f_tgt, pair_iter
 
             for c in self.corpora:
-                f_src, f_tgt, p_iter = init_iter(c)
+                f_src, f_tgt, p_iter = init_iter(c, 0)
                 iters.append(p_iter)
                 files_list.append((f_src, f_tgt))
 
@@ -186,7 +191,7 @@ class StreamingTextDataset(IterableDataset):
                             except Exception:
                                 pass
 
-                            f_src, f_tgt, p_iter = init_iter(self.corpora[c_idx])
+                            f_src, f_tgt, p_iter = init_iter(self.corpora[c_idx], corpus_epochs[c_idx])
                             iters[c_idx] = p_iter
                             files_list[c_idx] = (f_src, f_tgt)
 
@@ -281,8 +286,15 @@ class StreamingTextDataset(IterableDataset):
             length = max(len(s), len(t))
             new_max_len = max(max_len_in_batch, length)
             new_cost = (len(batch_srcs) + 1) * new_max_len
+            
+            # Check both token limit and batch size limit
+            over_token_limit = new_cost > self.max_tokens
+            over_batch_limit = (
+                self.max_batch_size is not None
+                and len(batch_srcs) >= self.max_batch_size
+            )
 
-            if new_cost > self.max_tokens and batch_srcs:
+            if (over_token_limit or over_batch_limit) and batch_srcs:
                 batches.append(self._collate(batch_srcs, batch_tgts))
                 batch_srcs, batch_tgts = [], []
                 max_len_in_batch = 0
@@ -328,6 +340,7 @@ def train_tokenizer(
         byte_fallback=True,
         input_sentence_size=input_sentence_size,
         shuffle_input_sentence=True,
+        split_digits=True
     )
     print(f"Tokenizer trained: {model_prefix}.model")
 
@@ -614,6 +627,7 @@ def PrepareData(
         infinite=False,
         rank=rank,
         world_size=world_size,
+        max_batch_size=train_cfg.val_batch_size,
     )
 
     # 4. Sanity-check: warn if any corpus is too small to feed every shard

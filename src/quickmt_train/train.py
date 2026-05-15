@@ -892,6 +892,10 @@ def _train_impl(
 def save_checkpoint(
     step, model, optimizer, scheduler, config, get_time_info, val_metrics=None, ema=None
 ):
+    # Free up memory before potentially expensive save operations
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Ensure experiment directory exists
     os.makedirs(config.experiment_name, exist_ok=True)
 
@@ -1040,6 +1044,10 @@ def validate(
     """
     Validate the model.
     """
+    # Free up memory before validation (especially if it involves generation)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     model.eval()
     total_loss_sum = 0
     total_tokens = 0
@@ -1142,6 +1150,10 @@ def validate(
                 f"Sample {i}: Ref: {references[i][:100]}... | Hyp: {hypotheses[i][:100]}..."
             )
         print("-" * 30)
+
+    # Free up memory after validation
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     model.train()
     return metrics
