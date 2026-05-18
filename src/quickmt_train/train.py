@@ -248,6 +248,14 @@ def train(model_cfg=None, data_cfg=None, train_cfg=None, on_eval_step=None):
     if train_cfg is None:
         train_cfg = TrainConfig()
 
+    metrics_path = os.path.join(train_cfg.experiment_name, "metrics.jsonl")
+    if not train_cfg.resume_from and os.path.exists(metrics_path):
+        print(f"Error: Metrics file '{metrics_path}' already exists.")
+        print("Training loop will not start.")
+        print("Please remove the file (and move/backup the checkpoints, because they will be removed by the training loop).")
+        import sys
+        sys.exit(1)
+
     rank, local_rank, world_size = setup_dist(train_cfg)
     is_main = rank == 0
 
