@@ -103,6 +103,7 @@ class ModelConfig:
     norm_type: NormType = NormType.RMSNORM
     tie_decoder_embeddings: bool = False
     joint_vocab: bool = False
+    use_rope: bool = False
 
     # Special Tokens
     pad_id: int = 0
