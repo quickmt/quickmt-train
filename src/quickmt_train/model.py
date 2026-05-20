@@ -42,6 +42,69 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class RotaryEmbedding(nn.Module):
+    """
+    Rotary Position Embedding (RoPE) implementation.
+    """
+
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=device) / self.dim)
+        )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+        # Build cache here to make it torch.compile-friendly
+        self._set_cos_sin_cache(
+            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
+        )
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+
+        freqs = torch.outer(t, self.inv_freq)
+        # Different from paper, but identical to HF Llama
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+
+    def forward(self, x, seq_len=None):
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
+        return (
+            self.cos_cached[:seq_len].to(dtype=x.dtype),
+            self.sin_cached[:seq_len].to(dtype=x.dtype),
+        )
+
+
+def rotate_half(x):
+    """
+    Rotates half the hidden dims of the input.
+    """
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(q, k, cos, sin):
+    """
+    Applies RoPE to Q and K tensors.
+    """
+    cos_q = cos[:, :, :q.size(2), :]
+    sin_q = sin[:, :, :q.size(2), :]
+    cos_k = cos[:, :, :k.size(2), :]
+    sin_k = sin[:, :, :k.size(2), :]
+
+    q_embed = (q * cos_q) + (rotate_half(q) * sin_q)
+    k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
+    return q_embed, k_embed
+
+
 class TokenEmbedding(nn.Module):
     """
     Converts token IDs into dense vectors of d_model dimension.
@@ -171,6 +234,7 @@ class GroupedQueryAttention(nn.Module):
         dropout=0.1,
         bias=False,
         batch_first=True,
+        use_rope=False,
     ):
         super().__init__()
         assert batch_first, "Only batch_first=True is supported"
@@ -180,12 +244,16 @@ class GroupedQueryAttention(nn.Module):
         self.num_heads_kv = num_heads_kv
         self.d_model = d_model
         self.batch_first = batch_first
+        self.use_rope = use_rope
 
         self.q_proj = nn.Linear(d_model, num_heads * self.head_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
         self.v_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
         self.out_proj = nn.Linear(num_heads * self.head_dim, d_model, bias=bias)
         self.dropout_p = dropout
+
+        if self.use_rope:
+            self.rotary_emb = RotaryEmbedding(self.head_dim)
 
     def forward(
         self,
@@ -208,6 +276,13 @@ class GroupedQueryAttention(nn.Module):
         q = q.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.view(bsz, kv_len, self.num_heads_kv, self.head_dim).transpose(1, 2)
         v = v.view(bsz, kv_len, self.num_heads_kv, self.head_dim).transpose(1, 2)
+
+        if self.use_rope:
+            seq_len = max(q_len, kv_len)
+            cos, sin = self.rotary_emb(q, seq_len=seq_len)
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         num_kv_groups = self.num_heads // self.num_heads_kv
         if num_kv_groups > 1:
@@ -291,6 +366,7 @@ class EncoderLayer(nn.Module):
         mlp_type="standard",
         norm_type="layernorm",
         n_kv_heads=None,
+        use_rope=False,
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
@@ -300,6 +376,7 @@ class EncoderLayer(nn.Module):
             dropout=dropout,
             bias=bias,
             batch_first=True,
+            use_rope=use_rope,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -366,6 +443,7 @@ class DecoderLayer(nn.Module):
         mlp_type="standard",
         norm_type="layernorm",
         n_kv_heads=None,
+        use_rope=False,
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
@@ -375,6 +453,7 @@ class DecoderLayer(nn.Module):
             dropout=dropout,
             bias=bias,
             batch_first=True,
+            use_rope=use_rope,
         )
         self.multihead_attn = GroupedQueryAttention(
             d_model,
@@ -383,6 +462,7 @@ class DecoderLayer(nn.Module):
             dropout=dropout,
             bias=bias,
             batch_first=True,
+            use_rope=False,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -476,9 +556,13 @@ class Seq2SeqTransformer(nn.Module):
             # Share embedding weights if joint vocabulary is used
             self.src_tok_emb.embedding.weight = self.tgt_tok_emb.embedding.weight
 
-        self.positional_encoding = PositionalEncoding(
-            config.d_model, dropout=config.dropout, max_len=config.max_len
-        )
+        use_rope = getattr(config, "use_rope", False)
+        if use_rope:
+            self.positional_encoding = nn.Dropout(config.dropout)
+        else:
+            self.positional_encoding = PositionalEncoding(
+                config.d_model, dropout=config.dropout, max_len=config.max_len
+            )
 
         encoder_layer = EncoderLayer(
             d_model=config.d_model,
@@ -491,13 +575,14 @@ class Seq2SeqTransformer(nn.Module):
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
             n_kv_heads=getattr(config, "n_kv_heads", None),
+            use_rope=use_rope,
         )
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
             num_layers=config.enc_layers,
             norm=get_norm(
                 config.d_model, config.layernorm_eps, config.ff_bias, config.norm_type
-            ),
+              ),
         )
 
         decoder_layer = DecoderLayer(
@@ -511,6 +596,7 @@ class Seq2SeqTransformer(nn.Module):
             mlp_type=config.mlp_type,
             norm_type=config.norm_type,
             n_kv_heads=getattr(config, "n_kv_heads", None),
+            use_rope=use_rope,
         )
         self.decoder = nn.TransformerDecoder(
             decoder_layer,

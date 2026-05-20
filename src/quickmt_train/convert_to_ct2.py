@@ -309,7 +309,6 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
     )
     if getattr(model_cfg, "n_kv_heads", None) is not None:
         enc_kwargs["num_heads_kv"] = model_cfg.n_kv_heads
-    encoder_spec = ctranslate2.specs.TransformerEncoderSpec(**enc_kwargs)
 
     dec_kwargs = dict(
         num_layers=model_cfg.dec_layers,
@@ -321,6 +320,16 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
     )
     if getattr(model_cfg, "n_kv_heads", None) is not None:
         dec_kwargs["num_heads_kv"] = model_cfg.n_kv_heads
+
+    use_rope = getattr(model_cfg, "use_rope", False)
+    if use_rope:
+        head_dim = model_cfg.d_model // model_cfg.n_heads
+        enc_kwargs["rotary_dim"] = head_dim
+        enc_kwargs["rotary_interleave"] = False
+        dec_kwargs["rotary_dim"] = head_dim
+        dec_kwargs["rotary_interleave"] = False
+
+    encoder_spec = ctranslate2.specs.TransformerEncoderSpec(**enc_kwargs)
     decoder_spec = ctranslate2.specs.TransformerDecoderSpec(**dec_kwargs)
 
     # ... mapping ...
@@ -353,7 +362,7 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
 
     # Position Encodings
     pe_tensor = state_dict.get("positional_encoding.pe")
-    if pe_tensor is not None:
+    if pe_tensor is not None and not use_rope:
         pe = (
             pe_tensor[0].detach().float().cpu().numpy()
             if hasattr(pe_tensor, "detach")
@@ -500,8 +509,11 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
         )
 
     spec.validate()
-    print("Using quantization: ", export_cfg.quantization)
-    spec.optimize(quantization=export_cfg.quantization)
+    quant_val = export_cfg.quantization.value if hasattr(export_cfg.quantization, "value") else export_cfg.quantization
+    if quant_val == "none":
+        quant_val = None
+    print("Using quantization: ", quant_val)
+    spec.optimize(quantization=quant_val)
     spec.save(export_cfg.output_dir)
     print(f"Model saved to {export_cfg.output_dir}")
 
