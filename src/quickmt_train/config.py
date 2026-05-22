@@ -104,6 +104,8 @@ class ModelConfig:
     tie_decoder_embeddings: bool = False
     joint_vocab: bool = False
     use_rope: bool = False
+    attn_logit_softcap: float = None
+    final_logit_softcap: float = None
 
     # Special Tokens
     pad_id: int = 0
@@ -200,6 +202,7 @@ class TrainConfig:
     warmup_steps: int = 5000
     max_steps: int = 100000
     epochs: int = 20
+    decay_dropout: bool = True
 
     # Training Loop
     accum_steps: int = 30
@@ -221,7 +224,7 @@ class TrainConfig:
     # Logging & Validation
     log_steps: int = 100
     val_max_samples: int = 2000
-    val_batch_size: int = 8
+    val_batch_size: int = 32
     quick_test_samples: int = 5
 
     # Checkpoint Resume

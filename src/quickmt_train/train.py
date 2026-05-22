@@ -410,8 +410,13 @@ def _train_impl(
 
     # Model
     print(f"{get_time_info()} Initializing model...")
+    if getattr(model_cfg, "attn_logit_softcap", None) is not None:
+        print(f"{get_time_info()} Info: Attention logit softcapping enabled (cap: {model_cfg.attn_logit_softcap})")
+    if getattr(model_cfg, "final_logit_softcap", None) is not None:
+        print(f"{get_time_info()} Info: Final logit softcapping enabled (cap: {model_cfg.final_logit_softcap})")
 
     model = Seq2SeqTransformer(model_cfg).to(device)
+    initial_dropout = model_cfg.dropout
 
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
@@ -707,6 +712,20 @@ def _train_impl(
             global_step += 1
             global_step_value.value = global_step
 
+            # Dynamic dropout decay with cosine schedule
+            if getattr(train_cfg, "decay_dropout", True) and initial_dropout > 0.0:
+                if global_step <= train_cfg.warmup_steps:
+                    new_dropout = initial_dropout
+                else:
+                    progress = float(global_step - train_cfg.warmup_steps) / float(
+                        max(1, train_cfg.max_steps - train_cfg.warmup_steps)
+                    )
+                    progress = min(max(progress, 0.0), 1.0)
+                    import math
+                    new_dropout = initial_dropout * 0.5 * (1.0 + math.cos(math.pi * progress))
+                
+                unwrap_model(model).set_dropout(new_dropout)
+
             # Validation and Checkpointing
             # Run validate() on ALL ranks (DDP requires all ranks to participate
             # in the forward pass). Only rank 0 saves checkpoints.
@@ -783,6 +802,7 @@ def _train_impl(
             if is_main and global_step % train_cfg.log_steps == 0:
                 curr_lr = optimizer.param_groups[0]["lr"]
                 elapsed = time.time() - last_log_time
+                curr_dropout = unwrap_model(model).config.dropout
 
                 # Estimate total system throughput: rank 0's count × world_size.
                 # Data is sharded evenly so this is a good approximation, and avoids
@@ -793,7 +813,7 @@ def _train_impl(
                 print(
                     f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
                     f"Loss: {last_batch_loss:.4f} | Grad: {last_grad_norm:.4f} "
-                    f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | "
+                    f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | Drop: {curr_dropout:.4f} | "
                     f"In: {in_tok_s:.0f} tok/s | Out: {out_tok_s:.0f} tok/s"
                     + (f" ({world_size} GPUs)" if world_size > 1 else "")
                 )
@@ -807,6 +827,7 @@ def _train_impl(
                         context={"subset": "train"},
                     )
                     run.track(curr_lr, name="lr", step=global_step)
+                    run.track(curr_dropout, name="dropout", step=global_step)
                     run.track(last_grad_norm, name="grad_norm", step=global_step)
                     run.track(clipping_count, name="clipping_count", step=global_step)
                     run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
