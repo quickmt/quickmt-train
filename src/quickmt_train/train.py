@@ -724,6 +724,11 @@ def _train_impl(
                     import math
                     new_dropout = initial_dropout * 0.5 * (1.0 + math.cos(math.pi * progress))
                 
+                # Round to the configured resolution to prevent frequent torch.compile recompilations
+                resolution = getattr(train_cfg, "dropout_decay_resolution", 0.01)
+                if resolution > 0.0:
+                    new_dropout = round(new_dropout / resolution) * resolution
+                
                 unwrap_model(model).set_dropout(new_dropout)
 
             # Validation and Checkpointing

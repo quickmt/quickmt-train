@@ -326,19 +326,20 @@ class GroupedQueryAttention(nn.Module):
             # Compute raw attention logits
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
             
-            # Apply logit softcapping
-            attn_scores = self.attn_logit_softcap * torch.tanh(attn_scores / self.attn_logit_softcap)
+            # Apply logit softcapping (avoiding sympy compilation warning by avoiding potential division/power-by-natural issues with config parameters)
+            inv_attn_softcap = 1.0 / self.attn_logit_softcap
+            attn_scores = self.attn_logit_softcap * torch.tanh(attn_scores * inv_attn_softcap)
             
             # Apply causal mask if specified
             if is_causal:
                 causal_mask = torch.ones(q_len, kv_len, dtype=torch.bool, device=q.device).tril()
-                fill_value = -1e9 if attn_scores.dtype == torch.float32 else -1e4
+                fill_value = -1e4 if attn_scores.dtype == torch.float16 or attn_scores.dtype == torch.bfloat16 else -1e9
                 attn_scores = attn_scores.masked_fill(~causal_mask.unsqueeze(0).unsqueeze(0), fill_value)
             
             # Apply padding/attention mask if specified
             if mask is not None:
                 if mask.dtype == torch.bool:
-                    fill_value = -1e9 if attn_scores.dtype == torch.float32 else -1e4
+                    fill_value = -1e4 if attn_scores.dtype == torch.float16 or attn_scores.dtype == torch.bfloat16 else -1e9
                     attn_scores = attn_scores.masked_fill(~mask, fill_value)
                 else:
                     attn_scores = attn_scores + mask
@@ -839,7 +840,8 @@ class Seq2SeqTransformer(nn.Module):
         logits = self.generator(x)
         final_softcap = getattr(self.config, "final_logit_softcap", None)
         if final_softcap is not None:
-            logits = final_softcap * torch.tanh(logits / final_softcap)
+            inv_final_softcap = 1.0 / final_softcap
+            logits = final_softcap * torch.tanh(logits * inv_final_softcap)
         return logits
 
     def forward(
