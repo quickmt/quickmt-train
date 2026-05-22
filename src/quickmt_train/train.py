@@ -1277,7 +1277,7 @@ def train_cli(config: str, **kwargs):
         config: Path to config file
         **kwargs: Overrides for configuration parameters (e.g., --max_steps 100)
     """
-    from .config import load_config
+    from .config import load_config, ExportConfig
     import yaml
 
     model_cfg, data_cfg, train_cfg, export_cfg = load_config(config)
@@ -1314,8 +1314,8 @@ def train_cli(config: str, **kwargs):
             res = {}
             for field in dataclasses.fields(obj):
                 val = getattr(obj, field.name)
-                if val is not None:
-                    res[field.name] = serialize_config(val)
+                # Keep fields with None or empty values if they are valid config fields
+                res[field.name] = serialize_config(val)
             return res
         elif isinstance(obj, list):
             return [serialize_config(item) for item in obj]
