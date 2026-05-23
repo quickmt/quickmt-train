@@ -13,9 +13,10 @@ def extract_step(filename):
     return -1
 
 
-def get_best_steps(metrics_path, metric_name, lower_is_better, k):
+def get_best_steps(metrics_path, metric_name, lower_is_better, k=None):
     """
     Returns the step numbers for the top k checkpoints based on the provided metrics.
+    If k is None, returns all scored steps sorted by metric.
     """
     if not os.path.exists(metrics_path):
         return []
@@ -35,4 +36,7 @@ def get_best_steps(metrics_path, metric_name, lower_is_better, k):
     # Sort: Primary key is the metric value, secondary key is step (favoring later steps)
     scored_steps.sort(key=lambda x: (x[0] if lower_is_better else -x[0], -x[1]))
 
-    return [s for _, s in scored_steps[:k]]
+    steps = [s for _, s in scored_steps]
+    if k is not None:
+        return steps[:k]
+    return steps

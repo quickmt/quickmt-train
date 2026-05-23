@@ -18,22 +18,24 @@ def get_averaged_state_dict(experiment_dir, model_cfg, train_cfg, export_cfg):
     Find and average the best k checkpoints.
     """
     metrics_path = os.path.join(experiment_dir, "metrics.jsonl")
+    # Get more than k steps in case some checkpoints do not exist on disk
     best_steps = get_best_steps(
         metrics_path,
         train_cfg.early_stopping_metric.value,
         train_cfg.early_stopping_metric.lower_is_better,
-        export_cfg.k,
+        None,  # Pass None to get all available steps sorted by metric
     )
 
     if best_steps:
-        selected = [f"model_{step}.safetensors" for step in best_steps]
-        # Prefer EMA weights if they exist
-        selected_ema = [f"model_{step}_ema.safetensors" for step in best_steps]
-
-        # Verify files exist
+        # Verify files exist and pick the top k that are actually available
         actual_files = []
         use_ema = True
-        for ema_f, std_f in zip(selected_ema, selected):
+        for step in best_steps:
+            if len(actual_files) >= export_cfg.k:
+                break
+            std_f = f"model_{step}.safetensors"
+            ema_f = f"model_{step}_ema.safetensors"
+
             if not getattr(export_cfg, "ignore_ema", False) and os.path.exists(
                 os.path.join(train_cfg.checkpoint_dir, ema_f)
             ):
