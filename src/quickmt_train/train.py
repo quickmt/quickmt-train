@@ -12,6 +12,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import GradScaler
 
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 1024  # Default is 64
+
 try:
     import torch._inductor.config as inductor_config
     import torch._inductor.lowering

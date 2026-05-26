@@ -203,7 +203,7 @@ class TrainConfig:
     max_steps: int = 100000
     epochs: int = 20
     decay_dropout: bool = True
-    dropout_decay_resolution: float = 0.01
+    dropout_decay_resolution: float = 0.4
 
     # Training Loop
     accum_steps: int = 30
