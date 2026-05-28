@@ -550,7 +550,9 @@ def _train_impl(
             progress = float(step - train_cfg.warmup_steps) / float(
                 max(1, train_cfg.max_steps - train_cfg.warmup_steps)
             )
-            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+            # Cosine decay from peak lr to 0.1 * peak lr
+            cosine_decay = 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+            return 0.1 + 0.9 * cosine_decay
         else:
             # Inverse Square Root scheduler
             if step < train_cfg.warmup_steps:
