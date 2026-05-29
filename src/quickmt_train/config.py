@@ -142,6 +142,8 @@ class DataConfig:
     def __post_init__(self):
         if self.corpora is None:
             self.corpora = []
+        if self.pipeline is None:
+            self.pipeline = []
 
     # Tokenizer
     char_coverage: float = 0.9999
@@ -169,6 +171,9 @@ class DataConfig:
     tgt_spm_nbest_size: int = 1
     src_spm_alpha: float = 0.0
     tgt_spm_alpha: float = 0.0
+
+    # Data Augmentation & Filtering Pipeline
+    pipeline: list[dict] = None  # Will be initialized in __post_init__
 
 
 @dataclass

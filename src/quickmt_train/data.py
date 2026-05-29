@@ -107,6 +107,7 @@ class StreamingTextDataset(IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         max_batch_size: int = None,
+        pipeline_config: list = None,
     ):
         self.corpora = corpora
         self.src_sp = src_sp
@@ -127,9 +128,18 @@ class StreamingTextDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         self.max_batch_size = max_batch_size
+        self.pipeline_config = pipeline_config
+        self.pipeline = None
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
+
+        # Instantiate pipeline inside __iter__ to avoid multiprocessing pickling issues
+        if self.pipeline_config:
+            from .processors import ProcessingPipeline
+            self.pipeline = ProcessingPipeline(self.pipeline_config)
+        else:
+            self.pipeline = None
 
         # Generator for tokenized samples
         def get_samples():
@@ -276,6 +286,16 @@ class StreamingTextDataset(IterableDataset):
                             except StopIteration:
                                 active_corpora.remove(c_idx)
                                 continue
+
+                        current_step = (
+                            self.global_step_value.value if self.global_step_value else 0
+                        )
+
+                        if self.pipeline:
+                            processed = self.pipeline(s, t, current_step)
+                            if processed is None:
+                                continue
+                            s, t = processed
 
                         s_ids = self.src_sp.encode(
                             s.strip(),
@@ -674,6 +694,7 @@ def PrepareData(
         tgt_spm_alpha=data_cfg.tgt_spm_alpha,
         rank=rank,
         world_size=world_size,
+        pipeline_config=data_cfg.pipeline,
     )
 
     dev_src_path, dev_tgt_path = prepare_dev_sample(
