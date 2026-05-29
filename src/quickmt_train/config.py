@@ -104,6 +104,8 @@ class ModelConfig:
     tie_decoder_embeddings: bool = False
     joint_vocab: bool = False
     use_rope: bool = False
+    attn_logit_softcap: float = None
+    final_logit_softcap: float = None
 
     # Special Tokens
     pad_id: int = 0
@@ -140,6 +142,8 @@ class DataConfig:
     def __post_init__(self):
         if self.corpora is None:
             self.corpora = []
+        if self.pipeline is None:
+            self.pipeline = []
 
     # Tokenizer
     char_coverage: float = 0.9999
@@ -167,6 +171,9 @@ class DataConfig:
     tgt_spm_nbest_size: int = 1
     src_spm_alpha: float = 0.0
     tgt_spm_alpha: float = 0.0
+
+    # Data Augmentation & Filtering Pipeline
+    pipeline: list[dict] = None  # Will be initialized in __post_init__
 
 
 @dataclass
@@ -200,6 +207,8 @@ class TrainConfig:
     warmup_steps: int = 5000
     max_steps: int = 100000
     epochs: int = 20
+    decay_dropout: bool = True
+    dropout_decay_resolution: float = 0.4
 
     # Training Loop
     accum_steps: int = 30
@@ -221,7 +230,7 @@ class TrainConfig:
     # Logging & Validation
     log_steps: int = 100
     val_max_samples: int = 2000
-    val_batch_size: int = 8
+    val_batch_size: int = 32
     quick_test_samples: int = 5
 
     # Checkpoint Resume

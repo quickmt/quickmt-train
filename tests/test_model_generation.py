@@ -8,11 +8,12 @@ import pytest
 import sys
 import os
 
-# Add parent directory to path
+# Add parent directory and src to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from config import ModelConfig
-from model import Seq2SeqTransformer
+from quickmt_train.config import ModelConfig
+from quickmt_train.model import Seq2SeqTransformer
 
 
 class TestGenerateMethod:

@@ -267,7 +267,8 @@ def convert_to_ct2_cli(experiment_dir: str, no_clobber: bool = False, **kwargs):
         else:
             checkpoints = sorted(
                 list(Path(experiment_dir).glob("checkpoints/checkpoint_*.safetensors"))
-                + list(Path(experiment_dir).glob("checkpoints/model_*.safetensors"))
+                + list(Path(experiment_dir).glob("checkpoints/model_*.safetensors")),
+                key=extract_step
             )
             if checkpoints:
                 model_file = str(checkpoints[-1])

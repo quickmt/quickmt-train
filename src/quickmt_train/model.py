@@ -235,6 +235,7 @@ class GroupedQueryAttention(nn.Module):
         bias=False,
         batch_first=True,
         use_rope=False,
+        attn_logit_softcap=None,
     ):
         super().__init__()
         assert batch_first, "Only batch_first=True is supported"
@@ -245,6 +246,7 @@ class GroupedQueryAttention(nn.Module):
         self.d_model = d_model
         self.batch_first = batch_first
         self.use_rope = use_rope
+        self.attn_logit_softcap = attn_logit_softcap
 
         self.q_proj = nn.Linear(d_model, num_heads * self.head_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, num_heads_kv * self.head_dim, bias=bias)
@@ -319,14 +321,47 @@ class GroupedQueryAttention(nn.Module):
             mask = m
             is_causal = False
 
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=mask,
-            dropout_p=self.dropout_p if self.training else 0.0,
-            is_causal=is_causal,
-        )
+        if self.attn_logit_softcap is not None:
+            # Manual attention with softcapping
+            # Compute raw attention logits
+            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            
+            # Apply logit softcapping (avoiding sympy compilation warning by avoiding potential division/power-by-natural issues with config parameters)
+            inv_attn_softcap = 1.0 / self.attn_logit_softcap
+            attn_scores = self.attn_logit_softcap * torch.tanh(attn_scores * inv_attn_softcap)
+            
+            # Apply causal mask if specified
+            if is_causal:
+                causal_mask = torch.ones(q_len, kv_len, dtype=torch.bool, device=q.device).tril()
+                fill_value = -1e4 if attn_scores.dtype == torch.float16 or attn_scores.dtype == torch.bfloat16 else -1e9
+                attn_scores = attn_scores.masked_fill(~causal_mask.unsqueeze(0).unsqueeze(0), fill_value)
+            
+            # Apply padding/attention mask if specified
+            if mask is not None:
+                if mask.dtype == torch.bool:
+                    fill_value = -1e4 if attn_scores.dtype == torch.float16 or attn_scores.dtype == torch.bfloat16 else -1e9
+                    attn_scores = attn_scores.masked_fill(~mask, fill_value)
+                else:
+                    attn_scores = attn_scores + mask
+            
+            # Softmax
+            attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+            
+            # Dropout
+            if self.training and self.dropout_p > 0.0:
+                attn_weights = torch.nn.functional.dropout(attn_weights, p=self.dropout_p)
+                
+            # Context vector
+            out = torch.matmul(attn_weights, v)
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                is_causal=is_causal,
+            )
 
         out = (
             out.transpose(1, 2)
@@ -367,6 +402,7 @@ class EncoderLayer(nn.Module):
         norm_type="layernorm",
         n_kv_heads=None,
         use_rope=False,
+        attn_logit_softcap=None,
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
@@ -377,6 +413,7 @@ class EncoderLayer(nn.Module):
             bias=bias,
             batch_first=True,
             use_rope=use_rope,
+            attn_logit_softcap=attn_logit_softcap,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -444,6 +481,7 @@ class DecoderLayer(nn.Module):
         norm_type="layernorm",
         n_kv_heads=None,
         use_rope=False,
+        attn_logit_softcap=None,
     ):
         super().__init__()
         self.self_attn = GroupedQueryAttention(
@@ -454,6 +492,7 @@ class DecoderLayer(nn.Module):
             bias=bias,
             batch_first=True,
             use_rope=use_rope,
+            attn_logit_softcap=attn_logit_softcap,
         )
         self.multihead_attn = GroupedQueryAttention(
             d_model,
@@ -463,6 +502,7 @@ class DecoderLayer(nn.Module):
             bias=bias,
             batch_first=True,
             use_rope=False,
+            attn_logit_softcap=attn_logit_softcap,
         )
         self.ffn = FeedForward(d_model, ffn_dim, dropout, activation, bias, mlp_type)
         self.norm1 = get_norm(d_model, layernorm_eps, bias, norm_type)
@@ -576,6 +616,7 @@ class Seq2SeqTransformer(nn.Module):
             norm_type=config.norm_type,
             n_kv_heads=getattr(config, "n_kv_heads", None),
             use_rope=use_rope,
+            attn_logit_softcap=getattr(config, "attn_logit_softcap", None),
         )
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -597,6 +638,7 @@ class Seq2SeqTransformer(nn.Module):
             norm_type=config.norm_type,
             n_kv_heads=getattr(config, "n_kv_heads", None),
             use_rope=use_rope,
+            attn_logit_softcap=getattr(config, "attn_logit_softcap", None),
         )
         self.decoder = nn.TransformerDecoder(
             decoder_layer,
@@ -795,7 +837,12 @@ class Seq2SeqTransformer(nn.Module):
         Returns:
             torch.Tensor: Logits of shape (..., vocab_size_tgt).
         """
-        return self.generator(x)
+        logits = self.generator(x)
+        final_softcap = getattr(self.config, "final_logit_softcap", None)
+        if final_softcap is not None:
+            inv_final_softcap = 1.0 / final_softcap
+            logits = final_softcap * torch.tanh(logits * inv_final_softcap)
+        return logits
 
     def forward(
         self,
@@ -866,6 +913,17 @@ class Seq2SeqTransformer(nn.Module):
             return loss, (logits, num_tokens)
         else:
             return loss, num_tokens
+
+    def set_dropout(self, p):
+        """
+        Dynamically update all dropout rates in the model.
+        """
+        self.config.dropout = p
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = p
+            elif hasattr(module, "dropout_p"):
+                module.dropout_p = p
 
     # Removed _compute_loss and _compute_z_loss to keep the graph unified for performance.
     # No more @torch._dynamo.disable decorators are used.

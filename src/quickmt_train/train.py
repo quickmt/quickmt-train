@@ -12,6 +12,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import GradScaler
 
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 1024  # Default is 64
+
 try:
     import torch._inductor.config as inductor_config
     import torch._inductor.lowering
@@ -410,8 +413,13 @@ def _train_impl(
 
     # Model
     print(f"{get_time_info()} Initializing model...")
+    if getattr(model_cfg, "attn_logit_softcap", None) is not None:
+        print(f"{get_time_info()} Info: Attention logit softcapping enabled (cap: {model_cfg.attn_logit_softcap})")
+    if getattr(model_cfg, "final_logit_softcap", None) is not None:
+        print(f"{get_time_info()} Info: Final logit softcapping enabled (cap: {model_cfg.final_logit_softcap})")
 
     model = Seq2SeqTransformer(model_cfg).to(device)
+    initial_dropout = model_cfg.dropout
 
     # Load model weights if resume_from is specified
     load_model_weights(model, train_cfg, device, get_time_info)
@@ -542,7 +550,9 @@ def _train_impl(
             progress = float(step - train_cfg.warmup_steps) / float(
                 max(1, train_cfg.max_steps - train_cfg.warmup_steps)
             )
-            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+            # Cosine decay from peak lr to 0.1 * peak lr
+            cosine_decay = 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+            return 0.1 + 0.9 * cosine_decay
         else:
             # Inverse Square Root scheduler
             if step < train_cfg.warmup_steps:
@@ -707,6 +717,25 @@ def _train_impl(
             global_step += 1
             global_step_value.value = global_step
 
+            # Dynamic dropout decay with cosine schedule
+            if getattr(train_cfg, "decay_dropout", True) and initial_dropout > 0.0:
+                if global_step <= train_cfg.warmup_steps:
+                    new_dropout = initial_dropout
+                else:
+                    progress = float(global_step - train_cfg.warmup_steps) / float(
+                        max(1, train_cfg.max_steps - train_cfg.warmup_steps)
+                    )
+                    progress = min(max(progress, 0.0), 1.0)
+                    import math
+                    new_dropout = initial_dropout * 0.5 * (1.0 + math.cos(math.pi * progress))
+                
+                # Round to the configured resolution to prevent frequent torch.compile recompilations
+                resolution = getattr(train_cfg, "dropout_decay_resolution", 0.01)
+                if resolution > 0.0:
+                    new_dropout = round(new_dropout / resolution) * resolution
+                
+                unwrap_model(model).set_dropout(new_dropout)
+
             # Validation and Checkpointing
             # Run validate() on ALL ranks (DDP requires all ranks to participate
             # in the forward pass). Only rank 0 saves checkpoints.
@@ -783,6 +812,7 @@ def _train_impl(
             if is_main and global_step % train_cfg.log_steps == 0:
                 curr_lr = optimizer.param_groups[0]["lr"]
                 elapsed = time.time() - last_log_time
+                curr_dropout = unwrap_model(model).config.dropout
 
                 # Estimate total system throughput: rank 0's count × world_size.
                 # Data is sharded evenly so this is a good approximation, and avoids
@@ -793,7 +823,7 @@ def _train_impl(
                 print(
                     f"{get_time_info()} Step {global_step}/{train_cfg.max_steps} | Batch {batch_idx} | "
                     f"Loss: {last_batch_loss:.4f} | Grad: {last_grad_norm:.4f} "
-                    f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | "
+                    f"(Clipped {clipping_count}x) | LR: {curr_lr:.6f} | Drop: {curr_dropout:.4f} | "
                     f"In: {in_tok_s:.0f} tok/s | Out: {out_tok_s:.0f} tok/s"
                     + (f" ({world_size} GPUs)" if world_size > 1 else "")
                 )
@@ -807,6 +837,7 @@ def _train_impl(
                         context={"subset": "train"},
                     )
                     run.track(curr_lr, name="lr", step=global_step)
+                    run.track(curr_dropout, name="dropout", step=global_step)
                     run.track(last_grad_norm, name="grad_norm", step=global_step)
                     run.track(clipping_count, name="clipping_count", step=global_step)
                     run.track(in_tok_s, name="input_tokens_per_sec", step=global_step)
@@ -1026,15 +1057,23 @@ def save_checkpoint(
                     )
 
     else:
+        # Sort checkpoints by step number (recent first) to maintain the most recent checkpoints
+        checkpoints_pt = sorted(checkpoints_pt, key=extract_step, reverse=True)
+        models_st = sorted(models_st, key=extract_step, reverse=True)
+        emas_st = sorted(emas_st, key=extract_step, reverse=True)
+
         if len(checkpoints_pt) > config.max_checkpoints:
-            os.remove(os.path.join(config.checkpoint_dir, checkpoints_pt[0]))
-            print(f"{get_time_info()} Removed old state: {checkpoints_pt[0]}")
+            for ckpt_file in checkpoints_pt[config.max_checkpoints:]:
+                os.remove(os.path.join(config.checkpoint_dir, ckpt_file))
+                print(f"{get_time_info()} Removed old state: {ckpt_file}")
         if len(models_st) > config.max_checkpoints:
-            os.remove(os.path.join(config.checkpoint_dir, models_st[0]))
-            print(f"{get_time_info()} Removed old weights: {models_st[0]}")
+            for model_file in models_st[config.max_checkpoints:]:
+                os.remove(os.path.join(config.checkpoint_dir, model_file))
+                print(f"{get_time_info()} Removed old weights: {model_file}")
         if len(emas_st) > config.max_checkpoints:
-            os.remove(os.path.join(config.checkpoint_dir, emas_st[0]))
-            print(f"{get_time_info()} Removed old EMA weights: {emas_st[0]}")
+            for ema_file in emas_st[config.max_checkpoints:]:
+                os.remove(os.path.join(config.checkpoint_dir, ema_file))
+                print(f"{get_time_info()} Removed old EMA weights: {ema_file}")
 
 
 def validate(
@@ -1243,14 +1282,15 @@ def train_cli(config: str, **kwargs):
         config: Path to config file
         **kwargs: Overrides for configuration parameters (e.g., --max_steps 100)
     """
-    from .config import load_config
+    from .config import load_config, ExportConfig
+    import yaml
 
-    model_cfg, data_cfg, train_cfg, _ = load_config(config)
+    model_cfg, data_cfg, train_cfg, export_cfg = load_config(config)
 
     # Apply overrides
     for key, value in kwargs.items():
         applied = False
-        for cfg in [train_cfg, model_cfg, data_cfg]:
+        for cfg in [train_cfg, model_cfg, data_cfg, export_cfg]:
             if hasattr(cfg, key):
                 from enum import Enum
 
@@ -1272,8 +1312,33 @@ def train_cli(config: str, **kwargs):
     # Make experiment folder if not exists
     os.makedirs(train_cfg.experiment_name, exist_ok=True)
 
-    # Copy config to experiment folder
-    copyfile(config, os.path.join(train_cfg.experiment_name, "config.yaml"))  # type: ignore
+    # Serialize and save all config values (including defaults) to the experiment folder
+    import dataclasses
+    def serialize_config(obj):
+        if dataclasses.is_dataclass(obj):
+            res = {}
+            for field in dataclasses.fields(obj):
+                val = getattr(obj, field.name)
+                # Keep fields with None or empty values if they are valid config fields
+                res[field.name] = serialize_config(val)
+            return res
+        elif isinstance(obj, list):
+            return [serialize_config(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: serialize_config(v) for k, v in obj.items()}
+        elif hasattr(obj, "value"):  # For Enums
+            return obj.value
+        return obj
+
+    complete_config = {
+        "model": serialize_config(model_cfg),
+        "data": serialize_config(data_cfg),
+        "train": serialize_config(train_cfg),
+        "export": serialize_config(export_cfg),
+    }
+
+    with open(os.path.join(train_cfg.experiment_name, "config.yaml"), "w") as f:
+        yaml.dump(complete_config, f, default_flow_style=False, sort_keys=False)
 
     train(model_cfg, data_cfg, train_cfg)
 
