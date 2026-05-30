@@ -2,84 +2,10 @@ import os
 import torch
 import itertools
 import random
-import gzip
-import lzma
-import zipfile
-import io
-try:
-    import zstandard as zstd
-except ImportError:
-    zstd = None
 from torch.utils.data import DataLoader, IterableDataset
 import sentencepiece as spm
 
-
-def smart_open(filename, mode="r", encoding="utf-8"):
-    """
-    Open a file with support for gzip, xz, zstd, and zip compression.
-    """
-    if "b" not in mode:
-        if mode == "r":
-            mode = "rt"
-        elif mode == "w":
-            mode = "wt"
-        elif mode == "a":
-            mode = "at"
-
-    if filename.endswith(".gz"):
-        return gzip.open(filename, mode, encoding=encoding if "b" not in mode else None)
-    elif filename.endswith(".xz"):
-        return lzma.open(filename, mode, encoding=encoding if "b" not in mode else None)
-    elif filename.endswith(".zst"):
-        if zstd is None:
-            raise ImportError(
-                "zstandard is not installed. Please install it to open .zst files."
-            )
-        if "w" in mode or "a" in mode:
-            # Use all available cores for compression
-            cctx = zstd.ZstdCompressor(threads=-1)
-            return zstd.open(
-                filename, mode, cctx=cctx, encoding=encoding if "b" not in mode else None
-            )
-        return zstd.open(filename, mode, encoding=encoding if "b" not in mode else None)
-    elif filename.endswith(".zip"):
-        if "w" in mode or "a" in mode:
-            # Writing to zip is more complex; falling back to standard open for now.
-            return open(filename, mode, encoding=encoding)
-        zf = zipfile.ZipFile(filename, "r")
-        name = zf.namelist()[0]
-        return io.TextIOWrapper(zf.open(name), encoding=encoding)
-    else:
-        return open(filename, mode, encoding=encoding)
-
-
-def create_sample_file(input_files, output_file, target_total_lines):
-    """
-    Creates a sampled plain text file from one or more input files (potentially compressed).
-    SentencePiece training requires plain text files.
-    """
-    if isinstance(input_files, str):
-        input_files = [input_files]
-
-    lines_per_file = max(1, target_total_lines // len(input_files))
-
-    with open(output_file, "w", encoding="utf-8") as f_out:
-        for f_path in input_files:
-            if not os.path.exists(f_path):
-                continue
-            with smart_open(f_path, "r", encoding="utf-8") as f_in:
-                # Reservoir sampling for random sample without loading full file
-                reservoir = []
-                for i, line in enumerate(f_in):
-                    if i < lines_per_file:
-                        reservoir.append(line)
-                    else:
-                        j = random.randint(0, i)
-                        if j < lines_per_file:
-                            reservoir[j] = line
-
-                for line in reservoir:
-                    f_out.write(line)
+from .utils import smart_open, create_sample_file
 
 
 class StreamingTextDataset(IterableDataset):

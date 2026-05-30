@@ -31,205 +31,17 @@ except ImportError:
     inductor_config = None
 
 from .tracker import get_tracker
-from safetensors.torch import load_file, save_model
+from safetensors.torch import save_model
 from shutil import copyfile
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from .config import CheckpointStrategy, DataConfig, ModelConfig, TrainConfig
-from .checkpoint_utils import get_best_steps, extract_step
+from .config import CheckpointStrategy, DataConfig, ModelConfig, TrainConfig, serialize_config
+from .checkpoint_utils import EMA, save_checkpoint
+from .utils import unwrap_model, print_model_details, setup_dist, load_model_weights
+from .evaluator import validate, run_quick_test
 from .data import PrepareData
 from .model import Seq2SeqTransformer
-
-
-class EMA:
-    """
-    Exponential Moving Average of model parameters.
-    """
-
-    def __init__(self, model, decay):
-        self.model = model
-        self.decay = decay
-        self.shadow = {}
-        self.backup = {}
-        # Use the underlying model if it's wrapped in DDP or compiled
-        raw_model = model.module if hasattr(model, "module") else model
-        if hasattr(raw_model, "_orig_mod"):
-            raw_model = raw_model._orig_mod
-
-        for name, param in itertools.chain(
-            raw_model.named_parameters(), raw_model.named_buffers()
-        ):
-            if param.requires_grad or name in self.shadow:
-                self.shadow[name] = param.data.clone()
-
-    def update(self, step=None, start_step=0):
-        raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        if hasattr(raw_model, "_orig_mod"):
-            raw_model = raw_model._orig_mod
-
-        for name, param in itertools.chain(
-            raw_model.named_parameters(), raw_model.named_buffers()
-        ):
-            if param.requires_grad or name in self.shadow:
-                assert name in self.shadow
-                if step is not None and step < start_step:
-                    # Sync exactly with model weights before the start step
-                    self.shadow[name].copy_(param.data)
-                else:
-                    # shadow = decay * shadow + (1 - decay) * param
-                    self.shadow[name].copy_(
-                        self.decay * self.shadow[name] + (1.0 - self.decay) * param.data
-                    )
-
-    def apply_shadow(self):
-        raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        if hasattr(raw_model, "_orig_mod"):
-            raw_model = raw_model._orig_mod
-
-        for name, param in itertools.chain(
-            raw_model.named_parameters(), raw_model.named_buffers()
-        ):
-            if param.requires_grad or name in self.shadow:
-                self.backup[name] = param.data.clone()
-                param.data.copy_(self.shadow[name])
-
-    def restore(self):
-        raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        if hasattr(raw_model, "_orig_mod"):
-            raw_model = raw_model._orig_mod
-
-        for name, param in itertools.chain(
-            raw_model.named_parameters(), raw_model.named_buffers()
-        ):
-            if param.requires_grad or name in self.shadow:
-                param.data.copy_(self.backup[name])
-        self.backup.clear()
-
-    def state_dict(self):
-        return self.shadow
-
-    def load_state_dict(self, state_dict):
-        for name, shadow_param in self.shadow.items():
-            if name in state_dict:
-                shadow_param.copy_(state_dict[name])
-
-
-def unwrap_model(model):
-    """Unwrap a model through torch.compile (_orig_mod) and DDP/DP (.module) layers."""
-    m = model
-    # Peel off compile wrapper
-    if hasattr(m, "_orig_mod"):
-        m = m._orig_mod
-    # Peel off DDP/DataParallel wrapper
-    if hasattr(m, "module"):
-        m = m.module
-    # One more compile wrapper in case compile was applied before DDP
-    if hasattr(m, "_orig_mod"):
-        m = m._orig_mod
-    return m
-
-
-def print_model_details(model, model_cfg, data_cfg, train_cfg, get_time_info):
-    # Calculate parameters for sub-modules
-    raw_model = unwrap_model(model)
-
-    src_emb_params = sum(p.numel() for p in raw_model.src_tok_emb.parameters())
-    tgt_emb_params = sum(p.numel() for p in raw_model.tgt_tok_emb.parameters())
-    enc_params = sum(p.numel() for p in raw_model.encoder.parameters())
-    dec_params = sum(p.numel() for p in raw_model.decoder.parameters())
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print(f"{get_time_info()} Model parameters: {total_params:,}")
-    print(f"{get_time_info()} Trainable parameters: {trainable_params:,}")
-    print(f"{get_time_info()} Source embedding params: {src_emb_params:,}")
-    print(f"{get_time_info()} Target embedding params: {tgt_emb_params:,}")
-    print(f"{get_time_info()} Encoder params: {enc_params:,}")
-    print(f"{get_time_info()} Decoder params: {dec_params:,}")
-
-    # Print model architecture
-    print(f"\n{get_time_info()} Model Architecture:")
-    print("-" * 60)
-    print(model)
-    print("-" * 60)
-
-    # Print configs
-    print(f"\n{get_time_info()} Configuration:")
-    print("-" * 60)
-
-    print("Model Config:")
-    for key, value in model_cfg.__dict__.items():
-        print(f"  {key}: {value}")
-
-    print("\nData Config:")
-    for key, value in data_cfg.__dict__.items():
-        print(f"  {key}: {value}")
-
-    print("\nTrain Config:")
-    for key, value in train_cfg.__dict__.items():
-        print(f"  {key}: {value}")
-
-    print("-" * 60)
-
-
-def setup_dist(train_cfg):
-    """
-    Initialize distributed training environment.
-    Returns (rank, local_rank, world_size)
-    """
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        # Launched via torchrun
-        rank = int(os.environ["RANK"])
-        local_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        # Set a 10-minute NCCL timeout so collective deadlocks surface as a clear
-        # error with a stack trace rather than hanging indefinitely.
-        from datetime import timedelta
-
-        dist.init_process_group("nccl", timeout=timedelta(minutes=10))
-        torch.cuda.set_device(local_rank)
-        return rank, local_rank, world_size
-    else:
-        # Single process
-        return 0, 0, 1
-
-
-def load_model_weights(model, train_cfg, device, get_time_info):
-    if not train_cfg.resume_from:
-        return
-
-    checkpoint_path = train_cfg.resume_from
-    weights_path = None
-
-    if checkpoint_path.endswith(".safetensors"):
-        weights_path = checkpoint_path
-    elif checkpoint_path.endswith(".pt"):
-        # Could be a full checkpoint or just weights
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        if isinstance(checkpoint, dict) and "optimizer_state_dict" not in checkpoint:
-            # Likely just weights in .pt
-            model.load_state_dict(checkpoint)
-            print(f"{get_time_info()} Loaded weights from {checkpoint_path}")
-        elif isinstance(checkpoint, dict) and "optimizer_state_dict" in checkpoint:
-            # Full checkpoint state, find weights
-            step = checkpoint.get("step", 0)
-            # Try to find model_{step}.safetensors in the same directory
-            weights_path = os.path.join(
-                os.path.dirname(checkpoint_path), f"model_{step}.safetensors"
-            )
-            if not os.path.exists(weights_path):
-                print(
-                    f"{get_time_info()} Warning: weights file not found for checkpoint at {weights_path}"
-                )
-                weights_path = None
-
-    if weights_path:
-        print(f"{get_time_info()} Loading weights from {weights_path}")
-        state_dict = load_file(weights_path, device=device.type)
-        # Remove _orig_mod. prefix if present in state_dict (shouldn't be, but safe)
-        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict, strict=False)
 
 
 def train(model_cfg=None, data_cfg=None, train_cfg=None, on_eval_step=None):
@@ -345,32 +157,19 @@ def _train_impl(
     else:
         run = None
 
-    import dataclasses
-
     if run and is_main:
-        from enum import Enum
-
-        def serialize_val(v):
-            if isinstance(v, Enum):
-                return v.value
-            if isinstance(v, list):
-                return [serialize_val(i) for i in v]
-            if isinstance(v, dict):
-                return {k: serialize_val(i) for k, i in v.items()}
-            return v
-
         hparams = {
             **{
-                f"model_{k}": serialize_val(v)
-                for k, v in dataclasses.asdict(model_cfg).items()
+                f"model_{k}": v
+                for k, v in serialize_config(model_cfg).items()
             },
             **{
-                f"data_{k}": serialize_val(v)
-                for k, v in dataclasses.asdict(data_cfg).items()
+                f"data_{k}": v
+                for k, v in serialize_config(data_cfg).items()
             },
             **{
-                f"train_{k}": serialize_val(v)
-                for k, v in dataclasses.asdict(train_cfg).items()
+                f"train_{k}": v
+                for k, v in serialize_config(train_cfg).items()
             },
         }
         run.log_hparams(hparams)
@@ -726,7 +525,6 @@ def _train_impl(
                         max(1, train_cfg.max_steps - train_cfg.warmup_steps)
                     )
                     progress = min(max(progress, 0.0), 1.0)
-                    import math
                     new_dropout = initial_dropout * 0.5 * (1.0 + math.cos(math.pi * progress))
                 
                 # Round to the configured resolution to prevent frequent torch.compile recompilations
@@ -906,6 +704,7 @@ def _train_impl(
                         val_metrics=val_metrics,
                         ema=ema,
                     )
+        else:
             if getattr(train_cfg, "save_checkpoints", True):
                 save_checkpoint(
                     global_step,
@@ -914,10 +713,9 @@ def _train_impl(
                     scheduler,
                     train_cfg,
                     get_time_info,
-                    val_metrics=val_metrics,
+                    val_metrics=latest_val_metrics,
+                    ema=ema,
                 )
-        if on_eval_step is not None:
-            on_eval_step(val_metrics, global_step)
 
         if ema is not None:
             ema.restore()
@@ -926,346 +724,6 @@ def _train_impl(
         run.close()
 
     return latest_val_metrics
-
-
-def save_checkpoint(
-    step, model, optimizer, scheduler, config, get_time_info, val_metrics=None, ema=None
-):
-    # Free up memory before potentially expensive save operations
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # Ensure experiment directory exists
-    os.makedirs(config.experiment_name, exist_ok=True)
-
-    # Save validation metrics to jsonl
-    if val_metrics is not None:
-        metrics_path = os.path.join(config.experiment_name, "metrics.jsonl")
-        with open(metrics_path, "a") as f:
-            elapsed = get_time_info(return_raw=True)
-            metric_entry = {"step": step, "elapsed": round(elapsed, 2), **val_metrics}
-            f.write(json.dumps(metric_entry) + "\n")
-
-    if not os.path.exists(config.checkpoint_dir):
-        os.makedirs(config.checkpoint_dir)
-
-    # Use save_model instead of save_file to handle shared tensors (tied embeddings)
-    # We need to unwrap the model to get the underlying structure for save_model
-    raw_model = unwrap_model(model)
-
-    path = os.path.join(config.checkpoint_dir, f"model_{step}.safetensors")
-    save_model(raw_model, path)
-    print(f"{get_time_info()} Model weights saved: {path}")
-
-    if ema is not None and step >= getattr(config, "ema_start_step", 0):
-        ema_path = os.path.join(config.checkpoint_dir, f"model_{step}_ema.safetensors")
-        # Temporarily apply EMA weights to save them
-        ema.apply_shadow()
-        save_model(raw_model, ema_path)
-        ema.restore()
-        print(f"{get_time_info()} EMA weights saved: {ema_path}")
-
-    # Save full state (optimizer, scheduler) in .pt for resuming
-    path_pt = os.path.join(config.checkpoint_dir, f"checkpoint_{step}.pt")
-    torch.save(
-        {
-            "step": step,
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "ema_state_dict": ema.state_dict() if ema is not None else None,
-            "best_val_metric": (
-                val_metrics.get(config.early_stopping_metric.value)
-                if val_metrics
-                else None
-            ),
-        },
-        path_pt,
-    )
-    print(f"{get_time_info()} Training state saved: {path_pt}")
-
-    # If it's a quantized model, also save a converted version for inference
-    raw_model = unwrap_model(model)
-    if hasattr(raw_model, "qconfig") and raw_model.qconfig is not None:
-        import copy
-
-        try:
-            quant_model = copy.deepcopy(raw_model)
-            quant_model.convert_to_int8()
-            quant_path = os.path.join(config.checkpoint_dir, f"model_{step}_int8.pt")
-            torch.save(quant_model.state_dict(), quant_path)
-            print(f"{get_time_info()} Exported INT8 model: {quant_path}")
-        except Exception as e:
-            print(f"{get_time_info()} Could not export INT8 model: {e}")
-
-    all_files = os.listdir(config.checkpoint_dir)
-    checkpoints_pt = sorted(
-        [f for f in all_files if f.startswith("checkpoint_")], key=extract_step
-    )
-    models_st = sorted(
-        [
-            f
-            for f in all_files
-            if f.startswith("model_") and f.endswith(".safetensors") and "_ema" not in f
-        ],
-        key=extract_step,
-    )
-    emas_st = sorted(
-        [
-            f
-            for f in all_files
-            if f.startswith("model_") and f.endswith("_ema.safetensors")
-        ],
-        key=extract_step,
-    )
-
-    if config.checkpoint_strategy == CheckpointStrategy.BEST:
-        metrics_path = os.path.join(config.experiment_name, "metrics.jsonl")
-        best_steps = get_best_steps(
-            metrics_path,
-            config.early_stopping_metric.value,
-            config.early_stopping_metric.lower_is_better,
-            config.max_checkpoints,
-        )
-
-        keep_steps = set(best_steps)
-        keep_steps.add(step)  # Always keep current for safety
-
-        if not best_steps:
-            print(
-                f"{get_time_info()} Warning: no metric scores found, skipping best-checkpoint cleanup"
-            )
-        else:
-            for ckpt_file in checkpoints_pt:
-                if extract_step(ckpt_file) not in keep_steps:
-                    os.remove(os.path.join(config.checkpoint_dir, ckpt_file))
-                    print(
-                        f"{get_time_info()} Removed old state (not in top-{config.max_checkpoints}): {ckpt_file}"
-                    )
-
-            for model_file in models_st:
-                if extract_step(model_file) not in keep_steps:
-                    os.remove(os.path.join(config.checkpoint_dir, model_file))
-                    print(
-                        f"{get_time_info()} Removed old weights (not in top-{config.max_checkpoints}): {model_file}"
-                    )
-
-            for ema_file in emas_st:
-                if extract_step(ema_file) not in keep_steps:
-                    os.remove(os.path.join(config.checkpoint_dir, ema_file))
-                    print(
-                        f"{get_time_info()} Removed old EMA weights (not in top-{config.max_checkpoints}): {ema_file}"
-                    )
-
-    else:
-        # Sort checkpoints by step number (recent first) to maintain the most recent checkpoints
-        checkpoints_pt = sorted(checkpoints_pt, key=extract_step, reverse=True)
-        models_st = sorted(models_st, key=extract_step, reverse=True)
-        emas_st = sorted(emas_st, key=extract_step, reverse=True)
-
-        if len(checkpoints_pt) > config.max_checkpoints:
-            for ckpt_file in checkpoints_pt[config.max_checkpoints:]:
-                os.remove(os.path.join(config.checkpoint_dir, ckpt_file))
-                print(f"{get_time_info()} Removed old state: {ckpt_file}")
-        if len(models_st) > config.max_checkpoints:
-            for model_file in models_st[config.max_checkpoints:]:
-                os.remove(os.path.join(config.checkpoint_dir, model_file))
-                print(f"{get_time_info()} Removed old weights: {model_file}")
-        if len(emas_st) > config.max_checkpoints:
-            for ema_file in emas_st[config.max_checkpoints:]:
-                os.remove(os.path.join(config.checkpoint_dir, ema_file))
-                print(f"{get_time_info()} Removed old EMA weights: {ema_file}")
-
-
-def validate(
-    model,
-    loader,
-    src_sp,
-    tgt_sp,
-    device,
-    train_cfg,
-    data_cfg,
-    model_cfg,
-    get_time_info,
-    use_autoregressive=True,
-):
-    """
-    Validate the model.
-    """
-    # Free up memory before validation (especially if it involves generation)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    model.eval()
-    total_loss_sum = 0
-    total_tokens = 0
-    correct_tokens = 0
-
-    hypotheses = []
-    references = []
-
-    autocast_dtype = torch.float32
-    if device.type == "cuda":
-        if train_cfg.precision in ("bf16", "bfloat16"):
-            autocast_dtype = torch.bfloat16
-        elif train_cfg.precision in ("fp16", "float16"):
-            autocast_dtype = torch.float16
-
-    with torch.inference_mode():
-        for batch_idx, (src, tgt) in enumerate(loader, start=1):
-            src, tgt = (
-                src.to(device, non_blocking=True),
-                tgt.to(device, non_blocking=True),
-            )
-
-            with torch.autocast(device_type=device.type, dtype=autocast_dtype):
-                loss_sum, (logits, num_tokens_batch) = model(
-                    src, tgt, return_outputs=True
-                )
-
-            if loss_sum.ndim > 0:
-                loss_sum = loss_sum.sum()
-            if num_tokens_batch.ndim > 0:
-                num_tokens_batch = num_tokens_batch.sum()
-
-            total_loss_sum += loss_sum.item()
-            total_tokens += num_tokens_batch.item()
-
-            tgt_labels = tgt[:, 1:]
-            preds = logits.argmax(dim=-1)
-            mask_acc = tgt_labels != model_cfg.pad_id
-            correct_tokens += ((preds == tgt_labels) & mask_acc).sum().item()
-
-            if use_autoregressive:
-                raw_model = unwrap_model(model)
-                enc = raw_model.encode(src)
-                generated_ids = raw_model.generate(
-                    src,
-                    max_len=model_cfg.max_len,
-                    enc_output=enc,
-                    bos_id=model_cfg.bos_id,
-                    eos_id=model_cfg.eos_id,
-                )
-            else:
-                generated_ids = preds
-
-            for i in range(src.size(0)):
-                # Stop at EOS or PAD tokens
-                def cleanup_ids(ids_list, pad_id, eos_id):
-                    for idx, token_id in enumerate(ids_list):
-                        if token_id == eos_id or token_id == pad_id:
-                            return ids_list[:idx]
-                    return ids_list
-
-                ids = cleanup_ids(
-                    generated_ids[i].tolist(), model_cfg.pad_id, model_cfg.eos_id
-                )
-                ref_ids = cleanup_ids(
-                    tgt[i].tolist(), model_cfg.pad_id, model_cfg.eos_id
-                )
-
-                hyp = tgt_sp.decode(ids)
-                ref = tgt_sp.decode(ref_ids)
-                hypotheses.append(hyp)
-                references.append(ref)
-
-    if dist.is_initialized():
-        sync_t = torch.tensor(
-            [total_loss_sum, float(total_tokens), float(correct_tokens)], device=device
-        )
-        dist.all_reduce(sync_t, op=dist.ReduceOp.SUM)
-        total_loss_sum, total_tokens, correct_tokens = sync_t.tolist()
-
-        all_h, all_r = [None] * dist.get_world_size(), [None] * dist.get_world_size()
-        dist.all_gather_object(all_h, hypotheses)
-        dist.all_gather_object(all_r, references)
-        hypotheses, references = [i for s in all_h for i in s], [
-            i for s in all_r for i in s
-        ]
-
-    avg_loss = total_loss_sum / max(1, total_tokens)
-    ppl, acc = math.exp(min(avg_loss, 100)), correct_tokens / max(1, total_tokens)
-    bleu = sacrebleu.corpus_bleu(hypotheses, [references]).score
-    chrf = sacrebleu.corpus_chrf(hypotheses, [references]).score
-    metrics = {"loss": avg_loss, "ppl": ppl, "acc": acc, "bleu": bleu, "chrf": chrf}
-
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        print(
-            f"\n{get_time_info()} [Validation] Loss: {avg_loss:.4f} | BLEU: {bleu:.2f} | ChrF: {chrf:.2f}"
-        )
-        for i in range(min(train_cfg.quick_test_samples, len(hypotheses))):
-            print(
-                f"Sample {i}: Ref: {references[i][:100]}... | Hyp: {hypotheses[i][:100]}..."
-            )
-        print("-" * 30)
-
-    # Free up memory after validation
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    model.train()
-    return metrics
-
-
-def run_quick_test(
-    model, loader, src_sp, tgt_sp, device, model_cfg, train_cfg, get_time_info
-):
-    # Quick Test with examples from dev data
-    print(
-        f"\n{get_time_info()} Running final quick test on {train_cfg.quick_test_samples} dev samples:"
-    )
-    model.eval()
-
-    samples_found = 0
-    with torch.inference_mode():
-        for src, tgt in loader:
-            src, tgt = src.to(device), tgt.to(device)
-            # Process up to n samples from this batch
-            n = min(train_cfg.quick_test_samples - samples_found, src.size(0))
-
-            for i in range(n):
-                s_tensor = src[i : i + 1]
-                t_tensor = tgt[i : i + 1]
-
-                # Generate
-                raw_model = unwrap_model(model)
-                generated_ids = raw_model.generate(
-                    s_tensor,
-                    max_len=model_cfg.max_len,
-                    bos_id=model_cfg.bos_id,
-                    eos_id=model_cfg.eos_id,
-                )
-
-                # Decoding
-                # Helper to remove padding and decode
-                def cleanup_and_decode(ids_tensor, sp, pad_id, eos_id):
-                    ids = ids_tensor[0].tolist()
-                    # Stop at EOS or PAD tokens
-                    for idx, token_id in enumerate(ids):
-                        if token_id == eos_id or token_id == pad_id:
-                            ids = ids[:idx]
-                            break
-                    return sp.decode(ids)
-
-                s_text = cleanup_and_decode(
-                    s_tensor, src_sp, model_cfg.pad_id, model_cfg.eos_id
-                )
-                t_ref = cleanup_and_decode(
-                    t_tensor, tgt_sp, model_cfg.pad_id, model_cfg.eos_id
-                )
-                t_hyp = cleanup_and_decode(
-                    generated_ids, tgt_sp, model_cfg.pad_id, model_cfg.eos_id
-                )
-
-                print(f"Example {samples_found + 1}:")
-                print(f"  Input:  {s_text}")
-                print(f"  Ref:    {t_ref}")
-                print(f"  Output: {t_hyp}")
-                print()
-
-                samples_found += 1
-
-            if samples_found >= train_cfg.quick_test_samples:
-                break
 
 
 def main():
@@ -1311,24 +769,6 @@ def train_cli(config: str, **kwargs):
 
     # Make experiment folder if not exists
     os.makedirs(train_cfg.experiment_name, exist_ok=True)
-
-    # Serialize and save all config values (including defaults) to the experiment folder
-    import dataclasses
-    def serialize_config(obj):
-        if dataclasses.is_dataclass(obj):
-            res = {}
-            for field in dataclasses.fields(obj):
-                val = getattr(obj, field.name)
-                # Keep fields with None or empty values if they are valid config fields
-                res[field.name] = serialize_config(val)
-            return res
-        elif isinstance(obj, list):
-            return [serialize_config(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {k: serialize_config(v) for k, v in obj.items()}
-        elif hasattr(obj, "value"):  # For Enums
-            return obj.value
-        return obj
 
     complete_config = {
         "model": serialize_config(model_cfg),

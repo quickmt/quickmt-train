@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import os
 
@@ -334,3 +334,22 @@ def load_config(path: str):
     data_config.experiment_name = train_config.experiment_name
 
     return model_config, data_config, train_config, export_config
+
+
+def serialize_config(obj):
+    """
+    Recursively serialize dataclasses, enums, lists, and dicts.
+    """
+    if is_dataclass(obj):
+        res = {}
+        for field in fields(obj):
+            val = getattr(obj, field.name)
+            res[field.name] = serialize_config(val)
+        return res
+    elif isinstance(obj, list):
+        return [serialize_config(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: serialize_config(v) for k, v in obj.items()}
+    elif hasattr(obj, "value"):  # For Enums
+        return obj.value
+    return obj
