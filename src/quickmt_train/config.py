@@ -254,7 +254,7 @@ class ExportConfig:
     ignore_ema: bool = False
 
     # Quantization
-    quantization: QuantizationType = QuantizationType.BFLOAT16
+    quantization: QuantizationType = QuantizationType.FLOAT16
 
     # Inference Defaults
     beam_size: int = 5
