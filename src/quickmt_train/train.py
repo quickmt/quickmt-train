@@ -668,10 +668,10 @@ def _train_impl(
             get_time_info,
         )
 
-        if ema is not None:
-            ema.apply_shadow()
-
         if global_step % train_cfg.eval_steps != 0:
+            if ema is not None:
+                ema.apply_shadow()
+
             val_metrics = validate(
                 model,
                 dev_loader,
@@ -684,6 +684,10 @@ def _train_impl(
                 get_time_info,
             )
             latest_val_metrics = val_metrics
+
+            if ema is not None:
+                ema.restore()
+
             if is_main:
                 if run:
                     for k, v in val_metrics.items():
@@ -716,9 +720,6 @@ def _train_impl(
                     val_metrics=latest_val_metrics,
                     ema=ema,
                 )
-
-        if ema is not None:
-            ema.restore()
 
     if is_main and run:
         run.close()
