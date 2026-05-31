@@ -34,25 +34,24 @@ data:
       tgt_file: "data/quickmt-train.is-en.en"
       weight: 3
       start_step: 8000 # delay starting due to being more difficult for the model to learn
-    - src_file: "data/finetranslations-sample-is-en.is"
-      tgt_file: "data/finetranslations-sample-is-en.en"
-      weight: 3 # lower weight because it is synthetic data
+    - src_file: "data/finetranslations.isl_Latn-eng_Latn.isl_Latn"
+      tgt_file: "data/finetranslations.isl_Latn-eng_Latn.eng_Latn"
+      weight: 3
       start_step: 0 # start at the beginning; synthetic data is easier for the model to learn
     - src_file: "data/newscrawl2024-en-backtranslated-is.is"
       tgt_file: "data/newscrawl2024-en-backtranslated-is.en"
-      start_step: 4000 # delay starting due to being more difficult for the model to learn
-      weight: 5 # lower weight because it is synthetic data
-      start_step: 0 # start nearthe beginning; synthetic data is easier for the model to learn
+      weight: 5
+      start_step: 0
   pipeline:
     - path: "quickmt_train.processors.LengthFilterProcessor"
-      start_step: 0
+      start_step: 0 # Filter out long segments in first 10k steps - they are harder to learn from
       stop_step: 10000
       kwargs:
         min_char_length: 3
         max_char_length: 100
         length_ratio: 2.0
     - path: "quickmt_train.processors.CharacterNoiseProcessor"
-      start_step: 10000
+      start_step: 10000 # Add a small amount of synthetic noise to hopefully make the model more robust
       kwargs:
         deletion_prob: 0.005
         swap_prob: 0.005
